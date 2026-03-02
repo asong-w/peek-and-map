@@ -1,0 +1,102 @@
+{
+  "name": "peek-and-map",
+  "displayName": "Peek and Map",
+  "description": "Provide two views to peek definition and map relationship",
+  "version": "1.0.0",
+  "publisher": "asong",
+  "icon": "media/icon.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/asong_w/peek-and-map"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "peekPanel",
+          "title": "Peek",
+          "icon": "$(symbol-method)"
+        },
+        {
+          "id": "mapPanel",
+          "title": "Map",
+          "icon": "$(references)"
+        }
+      ]
+    },
+    "views": {
+      "peekPanel": [
+        {
+          "type": "webview",
+          "id": "peekView.view",
+          "name": "Peek View"
+        }
+      ],
+      "mapPanel": [
+        {
+          "type": "webview",
+          "id": "mapView.view",
+          "name": "Map View"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "peekView.reveal",
+        "title": "Peek and Map: Show Peek View"
+      },
+      {
+        "command": "mapView.reveal",
+        "title": "Peek and Map: Show Map View"
+      }
+    ],
+    "configuration": {
+      "title": "Peek and Map",
+      "properties": {
+        "peekView.fontSize": {
+          "type": "number",
+          "default": 13,
+          "description": "Peek 视图字体大小（px）"
+        },
+        "peekView.highlightCurrentLine": {
+          "type": "boolean",
+          "default": true,
+          "description": "在 Peek 视图中高亮光标所在行"
+        },
+        "peekView.contextPadding": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "maximum": 500,
+          "description": "在符号定义体上下额外显示的行数（范围 0–500；方便查看更多上下文）"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "npx @vscode/vsce package --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "@types/prismjs": "^1.26.6",
+    "prismjs": "^1.30.0"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "npm: compile",
+      "type": "shell",
+      "command": "cmd /c npm run compile",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": { "reveal": "silent" },
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "npm: watch",
+      "type": "shell",
+      "command": "cmd /c npm run watch",
+      "group": "build",
+      "isBackground": true,
+      "presentation": { "reveal": "never" },
+      "problemMatcher": ["$tsc-watch"]
+    }
+  ]
+}
