@@ -8,7 +8,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/asong_w/peek-and-map"
+    "url": "https://github.com/ASongw/peek-and-map"
   },
   "engines": {
     "vscode": "^1.85.0"
