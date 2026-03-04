@@ -85,6 +85,7 @@ peek/
 | 方法 | 说明 |
 |------|------|
 | `notifyEditorChange()` | 记录最后已知编辑器 |
+| `setPeekView(pv)` | 注入 `PeekViewProvider` 引用，用于单击节点时直接更新预览 |
 | `_doSearch()` | 按钮触发：分析光标所在符号的引用和调用者 |
 | `_resolveReferencingSymbols()` | 查找引用并定位其所在的封闭符号，构建引用树 |
 | `_expandRef()` | 展开引用节点，递归加载子引用 |
@@ -102,7 +103,7 @@ peek/
 | `stripParams(name)` | 去除函数参数：`"foo(a, b)"` → `"foo"` |
 | `graphBuildFromData(d)` | 从搜索结果构建图形节点/边数据 |
 | `graphLayout()` | BFS 层级布局 + 宽度计算 + 居中定位 |
-| `graphDraw()` | Canvas 2D 渲染：Bezier 曲线连边、箭头、圆角矩形节点、类型徽章（按种类着色）、文件位置、标签 |
+| `graphDraw()` | Canvas 2D 渲染：Bezier 曲线连边、箭头、圆角矩形节点（统一形状）、彩色图标前缀（按种类着色，如 `ƒ` Function=蓝、`⊛` Method=紫、`◆` Class=琥珀等）、标签 |
 | `graphHitTest(cx, cy)` | 鼠标坐标命中测试 |
 | `graphHandleChildren()` | 处理扩展后返回的子节点，更新图形 |
 | `graphCollapse(node)` | 递归移除所有后代节点 |
@@ -113,5 +114,5 @@ peek/
 |------|------|
 | `search` | 触发符号分析 |
 | `expandRef` / `expandIncoming` | 展开树/图节点 |
-| `jumpTo` | 在编辑器中打开文件并定位（`preserveFocus: false`） |
-| `peekAt` | 在编辑器中预览文件（`preserveFocus: true, preview: true`），配合 Peek View |
+| `jumpTo` | 双击：在编辑器中打开文件并定位（`preserveFocus: false`），同时通过 `peekLocation()` 更新 Peek View |
+| `peekOnly` | 单击：调用 `_peekView.peekLocation()` 直接更新 Peek View，不打开编辑器 |
