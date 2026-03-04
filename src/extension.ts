@@ -6,6 +6,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const peekprovider = new PeekViewProvider(context.extensionUri);
   const mapProvider = new MapViewProvider(context.extensionUri);
 
+  // Allow MapViewProvider to update the peek view directly on single-click
+  mapProvider.setPeekView(peekprovider);
+
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       PeekViewProvider.viewType,

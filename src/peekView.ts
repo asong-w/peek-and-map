@@ -238,6 +238,24 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Directly show the symbol at (uri, pos) in the peek view without changing
+   * the active editor.  Called by MapViewProvider on single-click.
+   */
+  async peekLocation(uri: vscode.Uri, pos: vscode.Position): Promise<void> {
+    if (!this._view) { return; }
+    const ctx = await this._getContextFromLocation(uri, pos);
+    if (ctx) {
+      if (this._currentNavEntry) {
+        this._navBackStack.push(this._currentNavEntry);
+      }
+      this._navForwardStack = [];
+      this._currentNavEntry = ctx;
+      this._view.webview.postMessage({ type: 'update', data: ctx });
+      this._sendNavState();
+    }
+  }
+
+  /**
    * Open `uri`, resolve its document symbols, find the symbol that contains
    * `pos`, and return a ContextInfo for display.  If no symbol covers `pos`
    * (e.g. a .d.ts forward declaration with no body), fall back to the

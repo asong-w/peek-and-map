@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { TreeNodeData } from './types';
 import { getNonce } from './utils';
+import { PeekViewProvider } from './peekView';
 
 export class MapViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'mapView.view';
@@ -13,8 +14,14 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
   private _refNodeMap = new Map<string, { uri: vscode.Uri; position: vscode.Position }>();
   private _callerNodeMap = new Map<string, vscode.CallHierarchyItem>();
   private _nodeCounter = 0;
+  private _peekView?: PeekViewProvider;
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
+
+  /** Provide a reference to the PeekViewProvider so single-click can update it directly. */
+  setPeekView(pv: PeekViewProvider): void {
+    this._peekView = pv;
+  }
 
   /** Track the active editor (no auto-update). */
   notifyEditorChange(editor: vscode.TextEditor | undefined): void {
@@ -57,6 +64,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         case 'jumpTo': {
           const uri = vscode.Uri.parse(msg.uri as string);
           const pos = new vscode.Position(msg.line as number, msg.character as number);
+          // Update peek view immediately (don't wait for cursor-change event)
+          this._peekView?.peekLocation(uri, pos);
           try {
             const doc = await vscode.workspace.openTextDocument(uri);
             const ed  = await vscode.window.showTextDocument(doc, { preserveFocus: false, preview: false });
@@ -66,15 +75,11 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           break;
         }
 
-        case 'peekAt': {
+        case 'peekOnly': {
+          // Single-click: update peek view only, do NOT open/change the editor
           const uri = vscode.Uri.parse(msg.uri as string);
           const pos = new vscode.Position(msg.line as number, msg.character as number);
-          try {
-            const doc = await vscode.workspace.openTextDocument(uri);
-            const ed  = await vscode.window.showTextDocument(doc, { preserveFocus: true, preview: true });
-            ed.selection = new vscode.Selection(pos, pos);
-            ed.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-          } catch { /* ignore */ }
+          await this._peekView?.peekLocation(uri, pos);
           break;
         }
       }
@@ -640,7 +645,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
   </div>
   <div id="graph-container">
     <canvas id="graph-canvas"></canvas>
-    <div id="graph-hint">Click = peek · Double-click = open · Ctrl+click = expand/collapse · Scroll = zoom · Drag = pan</div>
+    <div id="graph-hint">Click = peek · Double-click = open &amp; peek · Ctrl+click = expand/collapse · Scroll = zoom · Drag = pan</div>
   </div>
 
   <script nonce="${nonce}">
@@ -1370,10 +1375,10 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
-      // Single click: peek in context window (preserveFocus)
+      // Single click: update peek view only (do NOT open editor)
       if (e.detail === 1 && hit.data) {
         vscodeApi.postMessage({
-          type: 'peekAt',
+          type: 'peekOnly',
           uri: hit.data.uri,
           line: hit.data.line,
           character: hit.data.character,
