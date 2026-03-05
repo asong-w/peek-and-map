@@ -932,13 +932,28 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
       const treeRow = e.target.closest('.tree-row');
       if (treeRow && !e.target.closest('.tree-toggle')) {
+        if (e.detail === 1) {
+          vscodeApi.postMessage({
+            type: 'peekOnly',
+            uri: treeRow.dataset.uri,
+            line: parseInt(treeRow.dataset.callLine, 10),
+            character: parseInt(treeRow.dataset.callChar, 10),
+          });
+        }
+        return;
+      }
+    });
+
+    // Double-click on tree row: open in editor AND update peek view
+    content.addEventListener('dblclick', (e) => {
+      const treeRow = e.target.closest('.tree-row');
+      if (treeRow && !e.target.closest('.tree-toggle')) {
         vscodeApi.postMessage({
           type: 'jumpTo',
           uri: treeRow.dataset.uri,
           line: parseInt(treeRow.dataset.callLine, 10),
           character: parseInt(treeRow.dataset.callChar, 10),
         });
-        return;
       }
     });
 
