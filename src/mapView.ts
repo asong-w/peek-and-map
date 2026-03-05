@@ -13,7 +13,6 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
   // Node maps for lazy tree expansion
   private _refNodeMap = new Map<string, { uri: vscode.Uri; position: vscode.Position }>();
-  private _callerNodeMap = new Map<string, vscode.CallHierarchyItem>();
   private _nodeCounter = 0;
   private _peekView?: PeekViewProvider;
 
@@ -65,10 +64,6 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           await this._expandRef(msg.nodeId as string);
           break;
 
-        case 'expandIncoming':
-          await this._expandIncoming(msg.nodeId as string);
-          break;
-
         case 'jumpTo': {
           const uri = vscode.Uri.parse(msg.uri as string);
           const pos = new vscode.Position(msg.line as number, msg.character as number);
@@ -102,12 +97,6 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     return id;
   }
 
-  private _allocCallerNodeId(item: vscode.CallHierarchyItem): string {
-    const id = `c${++this._nodeCounter}`;
-    this._callerNodeMap.set(id, item);
-    return id;
-  }
-
   // ── Search (button-triggered) ──────────────────────────────────────────────
 
   private async _doSearch(): Promise<void> {
@@ -131,7 +120,6 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
     // Clear maps for new search
     this._refNodeMap.clear();
-    this._callerNodeMap.clear();
     this._nodeCounter = 0;
 
     // Show loading state
@@ -142,8 +130,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     // ── References hierarchy (first level) ─────────────────────────────────
     const refNodes = await this._resolveReferencingSymbols(doc.uri, queryPos, wsRoot);
 
-    // ── Call hierarchy callers (first level) ────────────────────────────────
-    let callers: TreeNodeData[] = [];
+    // Determine symbol kind for display
     let rootKind = '';
     try {
       const items = await vscode.commands.executeCommand<vscode.CallHierarchyItem[]>(
@@ -151,42 +138,6 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       );
       if (items && items.length > 0) {
         rootKind = this._symbolKindName(items[0].kind);
-        const rootItem = items[0];
-        try {
-          const incoming = await vscode.commands.executeCommand<vscode.CallHierarchyIncomingCall[]>(
-            'vscode.provideIncomingCalls', rootItem
-          );
-          if (incoming) {
-            for (const call of incoming) {
-              const from = call.from;
-              let preview = '';
-              try {
-                const d = await vscode.workspace.openTextDocument(from.uri);
-                preview = d.lineAt(from.selectionRange.start.line).text.trim();
-              } catch { /* ignore */ }
-              // One node per call site; only the first call site gets an expandable nodeId
-              const ranges = call.fromRanges.length > 0 ? call.fromRanges : [null];
-              for (let i = 0; i < ranges.length; i++) {
-                const r = ranges[i];
-                const nodeId = i === 0
-                  ? this._allocCallerNodeId(from)
-                  : `leaf_${++this._nodeCounter}`;
-                callers.push({
-                  nodeId,
-                  label: from.name,
-                  detail: this._relativePath(from.uri.fsPath, wsRoot),
-                  line: from.selectionRange.start.line,
-                  character: from.selectionRange.start.character,
-                  callLine: r?.start.line ?? from.selectionRange.start.line,
-                  callCharacter: r?.start.character ?? from.selectionRange.start.character,
-                  uri: from.uri.toString(),
-                  kind: this._symbolKindName(from.kind),
-                  preview,
-                });
-              }
-            }
-          }
-        } catch { /* no incoming calls */ }
       }
     } catch { /* no call hierarchy provider */ }
 
@@ -197,7 +148,6 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         symbolKind: rootKind,
         fileName: path.basename(doc.uri.fsPath),
         refNodes,
-        callers,
       },
     });
   }
@@ -301,57 +251,6 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
     const children = await this._resolveReferencingSymbols(info.uri, info.position, wsRoot);
     this._view.webview.postMessage({ type: 'children', parentNodeId: nodeId, items: children });
-  }
-
-  // ── Expand: Incoming Calls (Callers) ───────────────────────────────────────
-
-  private async _expandIncoming(nodeId: string): Promise<void> {
-    if (!this._view) { return; }
-    const item = this._callerNodeMap.get(nodeId);
-    if (!item) {
-      this._view.webview.postMessage({ type: 'children', parentNodeId: nodeId, items: [] });
-      return;
-    }
-    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
-    try {
-      const incoming = await vscode.commands.executeCommand<vscode.CallHierarchyIncomingCall[]>(
-        'vscode.provideIncomingCalls', item
-      );
-      const children: TreeNodeData[] = [];
-      if (incoming) {
-        for (const call of incoming) {
-          const from = call.from;
-          let preview = '';
-          try {
-            const d = await vscode.workspace.openTextDocument(from.uri);
-            preview = d.lineAt(from.selectionRange.start.line).text.trim();
-          } catch { /* ignore */ }
-          // One child node per call site; only the first site gets an expandable nodeId
-          const ranges = call.fromRanges.length > 0 ? call.fromRanges : [null];
-          for (let i = 0; i < ranges.length; i++) {
-            const r = ranges[i];
-            const childId = i === 0
-              ? this._allocCallerNodeId(from)
-              : `leaf_${++this._nodeCounter}`;
-            children.push({
-              nodeId: childId,
-              label: from.name,
-              detail: this._relativePath(from.uri.fsPath, wsRoot),
-              line: from.selectionRange.start.line,
-              character: from.selectionRange.start.character,
-              callLine: r?.start.line ?? from.selectionRange.start.line,
-              callCharacter: r?.start.character ?? from.selectionRange.start.character,
-              uri: from.uri.toString(),
-              kind: this._symbolKindName(from.kind),
-              preview,
-            });
-          }
-        }
-      }
-      this._view.webview.postMessage({ type: 'children', parentNodeId: nodeId, items: children });
-    } catch {
-      this._view.webview.postMessage({ type: 'children', parentNodeId: nodeId, items: [] });
-    }
   }
 
   // ── Symbol helpers ─────────────────────────────────────────────────────────
@@ -500,42 +399,6 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       text-overflow: ellipsis;
       max-width: 200px;
       flex-shrink: 0;
-    }
-
-    /* ── Tab bar ────────────────────────────────────────────────── */
-    #tabs {
-      display: flex;
-      background: var(--vscode-sideBarSectionHeader-background, #252526);
-      border-bottom: 1px solid var(--vscode-panel-border, #333);
-      flex-shrink: 0;
-      user-select: none;
-    }
-    .tab {
-      padding: 4px 14px;
-      font-size: 12px;
-      cursor: pointer;
-      color: var(--vscode-foreground, #ccc);
-      border-bottom: 2px solid transparent;
-      transition: background 0.15s;
-      display: flex;
-      align-items: center;
-      gap: 5px;
-    }
-    .tab:hover {
-      background: var(--vscode-toolbar-hoverBackground, rgba(90,93,94,0.31));
-    }
-    .tab.active {
-      color: var(--vscode-panelTitle-activeForeground, #fff);
-      border-bottom-color: var(--vscode-panelTitle-activeBorder, #007acc);
-    }
-    .tab .count {
-      font-size: 10px;
-      padding: 0 5px;
-      border-radius: 8px;
-      background: var(--vscode-badge-background, #4d4d4d);
-      color: var(--vscode-badge-foreground, #fff);
-      min-width: 16px;
-      text-align: center;
     }
 
     /* ── Content ────────────────────────────────────────────────── */
@@ -702,10 +565,6 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     <span id="symbol-name">Select a symbol, then click "Analysis"</span>
     <span id="file-name"></span>
   </div>
-  <div id="tabs">
-    <div class="tab active" data-tab="references">References <span class="count" id="count-ref">0</span></div>
-    <div class="tab" data-tab="callers">Callers <span class="count" id="count-in">0</span></div>
-  </div>
   <div id="empty-msg">Place cursor on a symbol, then click "Analysis"</div>
   <div id="content" style="display:none">
     <div class="table-header">
@@ -714,7 +573,6 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       <div class="col-line">Line</div>
     </div>
     <div class="section active" id="sec-references"></div>
-    <div class="section" id="sec-callers"></div>
   </div>
   <div id="graph-container">
     <canvas id="graph-canvas"></canvas>
@@ -733,18 +591,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     const viewToggleBtn = document.getElementById('view-toggle-btn');
     const graphContainer = document.getElementById('graph-container');
     const graphCanvas   = document.getElementById('graph-canvas');
-    const tabsEl        = document.getElementById('tabs');
+    const refSection    = document.getElementById('sec-references');
 
-    const sections = {
-      references: document.getElementById('sec-references'),
-      callers:    document.getElementById('sec-callers'),
-    };
-    const counts = {
-      references: document.getElementById('count-ref'),
-      callers:    document.getElementById('count-in'),
-    };
-
-    let activeTab = 'references';
     const loadedNodes = new Set();
 
     // ── View mode: 'tree' or 'graph' ─────────────────────────────────────
@@ -759,14 +607,12 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       viewMode = mode;
       if (mode === 'graph') {
         content.style.display = 'none';
-        tabsEl.style.display = 'none';
         graphContainer.style.display = 'block';
         if (lastUpdateData) {
           graphBuildFromData(lastUpdateData);
         }
       } else {
         graphContainer.style.display = 'none';
-        tabsEl.style.display = 'flex';
         if (lastUpdateData) {
           content.style.display = 'block';
         }
@@ -780,19 +626,6 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     // ── Search button ────────────────────────────────────────────────────
     searchBtn.addEventListener('click', () => {
       vscodeApi.postMessage({ type: 'search' });
-    });
-
-    // ── Tab switching ────────────────────────────────────────────────────
-    tabsEl.addEventListener('click', (e) => {
-      const tab = e.target.closest('.tab');
-      if (!tab) return;
-      const name = tab.dataset.tab;
-      if (!name || name === activeTab) return;
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      Object.values(sections).forEach(s => s.classList.remove('active'));
-      sections[name].classList.add('active');
-      activeTab = name;
     });
 
     // ── Messages from extension ──────────────────────────────────────────
@@ -843,18 +676,13 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         emptyMsg.style.display   = 'none';
 
         // Tree view
-        renderTreeList(sections.references, d.refNodes, 0);
-        renderTreeList(sections.callers, d.callers, 0);
-        counts.references.textContent = '' + d.refNodes.length;
-        counts.callers.textContent    = '' + d.callers.length;
+        renderTreeList(refSection, d.refNodes, 0);
 
         if (viewMode === 'tree') {
           content.style.display = 'block';
           graphContainer.style.display = 'none';
-          tabsEl.style.display = 'flex';
         } else {
           content.style.display = 'none';
-          tabsEl.style.display = 'none';
           graphContainer.style.display = 'block';
           graphBuildFromData(d);
         }
@@ -966,14 +794,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         } else {
           toggle.innerHTML = '<svg viewBox="0 0 16 16"><polyline points="6,2 12,8 6,14"/></svg>';
           toggle.classList.add('loading');
-          const section = nodeEl.closest('.section');
-          let msgType;
-          if (section && section.id === 'sec-references') {
-            msgType = 'expandRef';
-          } else {
-            msgType = 'expandIncoming';
-          }
-          vscodeApi.postMessage({ type: msgType, nodeId: nodeId });
+          vscodeApi.postMessage({ type: 'expandRef', nodeId: nodeId });
         }
         return;
       }
@@ -1047,8 +868,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         parentId: null,
       });
 
-      // Combine refNodes + callers as first-level children
-      const allChildren = [].concat(d.refNodes || [], d.callers || []);
+      // Combine refNodes as first-level children
+      const allChildren = d.refNodes || [];
       for (const item of allChildren) {
         const nid = item.nodeId;
         gNodes.push({
@@ -1504,8 +1325,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           if (loadedNodes.has(hit.id)) return;
           hit.loading = true;
           graphDraw();
-          let msgType = hit.id.startsWith('c') ? 'expandIncoming' : 'expandRef';
-          vscodeApi.postMessage({ type: msgType, nodeId: hit.id });
+          vscodeApi.postMessage({ type: 'expandRef', nodeId: hit.id });
         }
         return;
       }

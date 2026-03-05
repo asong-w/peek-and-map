@@ -82,16 +82,15 @@ peek/
 
 ### `mapView.ts` — Map View 面板
 
-`MapViewProvider` 实现 `WebviewViewProvider`，提供两个维度的符号关系分析，并支持树形列表和 Canvas 图形两种视图模式：
+`MapViewProvider` 实现 `WebviewViewProvider`，提供符号引用关系分析，并支持树形列表和 Canvas 图形两种视图模式：
 
 | 方法 | 说明 |
 |------|------|
 | `notifyEditorChange()` | 记录最后已知编辑器 |
 | `setPeekView(pv)` | 注入 `PeekViewProvider` 引用，用于单击节点时直接更新预览 |
-| `_doSearch()` | 按钮触发：分析光标所在符号的引用和调用者 |
+| `_doSearch()` | 按钮触发：分析光标所在符号的引用 |
 | `_resolveReferencingSymbols()` | 查找引用并定位其所在的封闭符号，构建引用树 |
 | `_expandRef()` | 展开引用节点，递归加载子引用 |
-| `_expandIncoming()` | 展开调用层级节点，加载上游调用者 |
 | `_getDocumentSymbols()` | 获取文档符号列表 |
 | `_deepestContaining()` | 递归查找最内层包含指定位置的符号 |
 | `_getHtml()` | 返回 Map View 的 webview HTML/CSS/JS |
@@ -115,6 +114,6 @@ peek/
 | 消息类型（Webview→Extension） | 说明 |
 |------|------|
 | `search` | 触发符号分析 |
-| `expandRef` / `expandIncoming` | 展开树/图节点 |
+| `expandRef` | 展开树/图节点 |
 | `jumpTo` | 双击：在编辑器中打开文件并定位（`preserveFocus: false`），同时通过 `peekLocation()` 更新 Peek View |
 | `peekOnly` | 单击：调用 `_peekView.peekLocation()` 直接更新 Peek View，不打开编辑器 |
