@@ -144,11 +144,13 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
     // ── Call hierarchy callers (first level) ────────────────────────────────
     let callers: TreeNodeData[] = [];
+    let rootKind = '';
     try {
       const items = await vscode.commands.executeCommand<vscode.CallHierarchyItem[]>(
         'vscode.prepareCallHierarchy', doc.uri, queryPos
       );
       if (items && items.length > 0) {
+        rootKind = this._symbolKindName(items[0].kind);
         const rootItem = items[0];
         try {
           const incoming = await vscode.commands.executeCommand<vscode.CallHierarchyIncomingCall[]>(
@@ -192,6 +194,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       type: 'update',
       data: {
         symbolName: word,
+        symbolKind: rootKind,
         fileName: path.basename(doc.uri.fsPath),
         refNodes,
         callers,
@@ -484,7 +487,6 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     }
     #symbol-name {
       font-weight: 600;
-      color: var(--vscode-symbolIcon-functionForeground, #dcdcaa);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -596,16 +598,20 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       to   { transform: rotate(360deg); }
     }
     .item-icon {
-      font-size: 13px;
-      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       width: 16px;
-      text-align: center;
-      display: inline-block;
+      height: 16px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: bold;
+      font-family: var(--vscode-editor-font-family, monospace);
+      flex-shrink: 0;
       line-height: 1;
     }
     .tree-row .item-name {
       font-weight: 600;
-      color: var(--vscode-symbolIcon-functionForeground, #dcdcaa);
       overflow: hidden;
       text-overflow: ellipsis;
     }
@@ -798,8 +804,9 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         emptyMsg.style.display = 'flex';
         content.style.display  = 'none';
         graphContainer.style.display = 'none';
-        symbolNameEl.textContent = msg.message;
-        fileNameEl.textContent = '';
+        symbolNameEl.textContent  = msg.message;
+        symbolNameEl.style.color  = '';
+        fileNameEl.textContent    = '';
         lastUpdateData = null;
         return;
       }
@@ -809,13 +816,18 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         emptyMsg.style.display = 'flex';
         content.style.display  = 'none';
         graphContainer.style.display = 'none';
-        symbolNameEl.textContent = msg.symbolName;
-        fileNameEl.textContent = '';
+        symbolNameEl.textContent  = msg.symbolName;
+        symbolNameEl.style.color  = '';
+        fileNameEl.textContent    = '';
         return;
       }
 
       if (msg.type === 'themeColors') {
         document.getElementById('theme-tokens').textContent = msg.css;
+        // Re-color symbol name header if we have an active result
+        if (lastUpdateData?.symbolKind) {
+          symbolNameEl.style.color = nodeKindColor(lastUpdateData.symbolKind) || 'var(--vscode-symbolIcon-functionForeground,#dcdcaa)';
+        }
         // Redraw graph in case it's visible, so node border colors update
         if (viewMode === 'graph' && lastUpdateData) { graphDraw(); }
         return;
@@ -825,8 +837,9 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         loadedNodes.clear();
         const d = msg.data;
         lastUpdateData = d;
-        symbolNameEl.textContent = d.symbolName;
-        fileNameEl.textContent   = d.fileName ? '  ' + d.fileName : '';
+        symbolNameEl.textContent  = d.symbolName;
+        symbolNameEl.style.color  = nodeKindColor(d.symbolKind) || 'var(--vscode-symbolIcon-functionForeground,#dcdcaa)';
+        fileNameEl.textContent    = d.fileName ? '  ' + d.fileName : '';
         emptyMsg.style.display   = 'none';
 
         // Tree view
@@ -910,7 +923,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       const pad = depth * 16;
       const isLeaf = item.nodeId.startsWith('leaf_');
       const kindHtml = item.kind
-        ? '<span class="item-icon" style="color:' + (nodeKindColor(item.kind) || 'inherit') + '">' + kindSymbol(item.kind) + '</span>'
+        ? '<span class="item-icon" style="color:var(--peek-kind-' + (item.kind === 'Ctor' ? 'Constructor' : item.kind) + ',var(--vscode-foreground,#ccc));background-color:color-mix(in srgb,var(--peek-kind-' + (item.kind === 'Ctor' ? 'Constructor' : item.kind) + ',transparent) 18%,transparent)">' + kindSymbol(item.kind) + '</span>'
         : '';
       const toggleChar = isLeaf ? '' : '<svg viewBox="0 0 16 16"><polyline points="6,2 12,8 6,14"/></svg>';
       const callLine = item.callLine != null ? item.callLine : item.line;
@@ -924,7 +937,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         + '<div class="col-name" style="padding-left:' + (pad + 4) + 'px">'
         + '<span class="tree-toggle">' + toggleChar + '</span>'
         + kindHtml
-        + '<span class="item-name">' + escapeHtml(stripParams(item.label)) + '</span>'
+        + '<span class="item-name" style="color:var(--peek-kind-' + (item.kind === 'Ctor' ? 'Constructor' : (item.kind || 'Function')) + ',var(--vscode-symbolIcon-functionForeground,#dcdcaa))">' + escapeHtml(stripParams(item.label)) + '</span>'
         + '</div>'
         + '<div class="col-file" title="' + escapeAttr(item.detail) + '">' + escapeHtml(item.detail) + '</div>'
         + '<div class="col-line">' + (callLine + 1) + '</div>'
@@ -1066,28 +1079,44 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     /* Return prefix symbol for a kind */
     function nodeKindPrefix(kind) {
       const prefixes = {
-        'Function':  '⨍',
-        'Method':    '◈',
-        'Class':     '◆',
-        'Interface': '◇',
-        'Variable':  '▽',
-        'Constant':  '▼',
-        'Property':  '◉',
-        'Field':     '○',
-        'Enum':      '▣',
-        'Module':    '◫',
-        'Namespace': '◧',
-        'Struct':    '▢',
-        'Ctor':      '⊕',
-        'Global':    '◎',
-        'Root':      '★',
+        'Function':  'f',
+        'Method':    'm',
+        'Class':     'C',
+        'Interface': 'I',
+        'Variable':  'v',
+        'Constant':  'c',
+        'Property':  'p',
+        'Field':     'F',
+        'Enum':      'E',
+        'Module':    'M',
+        'Namespace': 'N',
+        'Struct':    'S',
+        'Ctor':      'K',
+        'Global':    'G',
+        'Root':      'R',
       };
-      return prefixes[kind] || '•';
+      return prefixes[kind] || '?';
     }
 
     /* Return symbol for a kind (used in tree view) */
     function kindSymbol(kind) {
       return nodeKindPrefix(kind);
+    }
+
+    /* Convert #rrggbb hex to rgba(r,g,b,a) string */
+    function hexToRgba(hex, alpha) {
+      const h = (hex || '').replace('#', '');
+      if (h.length < 6) { return 'rgba(128,128,128,' + alpha + ')'; }
+      const r = parseInt(h.slice(0, 2), 16);
+      const g = parseInt(h.slice(2, 4), 16);
+      const b = parseInt(h.slice(4, 6), 16);
+      return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+    }
+
+    /* Return semi-transparent background color for a kind badge */
+    function kindBgColor(kind) {
+      const color = nodeKindColor(kind);
+      return color ? hexToRgba(color, 0.18) : 'rgba(128,128,128,0.18)';
     }
 
     /* Return accent color for a kind — reads CSS vars injected from real TextMate theme */
@@ -1116,10 +1145,9 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       for (const n of gNodes) {
         nodeMap[n.id] = n;
         const isRootNode = n.id === '__root__';
-        const prefix = nodeKindPrefix(n.kind);
-        const displayLabel = prefix + ' ' + stripParams(n.label);
+        const displayLabel = stripParams(n.label);
         const labelW = gTextWidth(displayLabel, isRootNode ? ('bold ' + font) : font);
-        n.w = G_PAD_X * 2 + labelW;
+        n.w = G_PAD_X * 2 + 19 + labelW;  // 19 = badge(14) + gap(5)
         if (n.w < 60) n.w = 60;
       }
 
@@ -1294,21 +1322,38 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           ctx.fillText(n.expanded ? '−' : '+', bx, by);
         }
 
-        // Label with kind prefix (centered, single row)
-        const prefix = nodeKindPrefix(n.kind);
-        const displayLabel = prefix + ' ' + stripParams(n.label);
-        ctx.font = isRoot ? ('bold ' + font) : font;
+        // Kind badge + label (centered, single row)
+        const letter    = nodeKindPrefix(n.kind);
+        const badgeW    = 14;
+        const badgeH    = 14;
+        const badgeGap  = 5;
+        const drawFont  = isRoot ? ('bold ' + font) : font;
+        ctx.font = drawFont;
+        const rawLabel  = stripParams(n.label);
+        const textW     = gTextWidth(rawLabel, drawFont);
+        const totalW    = badgeW + badgeGap + textW;
+        const startX    = ncx - totalW / 2;
+
+        // Badge rounded-rect background
+        ctx.fillStyle = hexToRgba(kindBorderColor, 0.22);
+        const bY = ncy - badgeH / 2;
+        ctx.beginPath();
+        ctx.roundRect(startX, bY, badgeW, badgeH, 3);
+        ctx.fill();
+
+        // Badge letter
+        ctx.font = 'bold 9px ' + getComputedStyle(document.body).fontFamily;
+        ctx.fillStyle = kindBorderColor;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        // Draw prefix in kind color, label in function color
-        const prefixW = gTextWidth(prefix + ' ', ctx.font);
-        const labelW = gTextWidth(displayLabel, ctx.font);
-        const labelStartX = ncx - labelW / 2;
-        ctx.fillStyle = kindBorderColor;
+        ctx.fillText(letter, startX + badgeW / 2, ncy);
+
+        // Label text
+        ctx.font = drawFont;
+        ctx.fillStyle = isRoot ? accentColor : (nodeKindColor(n.kind) || funcColor);
         ctx.textAlign = 'left';
-        ctx.fillText(prefix, labelStartX, ncy);
-        ctx.fillStyle = isRoot ? accentColor : funcColor;
-        ctx.fillText(stripParams(n.label), labelStartX + prefixW, ncy);
+        ctx.textBaseline = 'middle';
+        ctx.fillText(rawLabel, startX + badgeW + badgeGap, ncy);
       }
 
       ctx.restore();
