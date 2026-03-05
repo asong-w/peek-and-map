@@ -3,6 +3,7 @@ import * as path from 'path';
 import { TreeNodeData } from './types';
 import { getNonce } from './utils';
 import { PeekViewProvider } from './peekView';
+import { generateSymbolKindCss } from './theme';
 
 export class MapViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'mapView.view';
@@ -30,6 +31,12 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** Push current theme symbol-kind colors to the webview. */
+  pushThemeColors(): void {
+    if (!this._view) { return; }
+    this._view.webview.postMessage({ type: 'themeColors', css: generateSymbolKindCss() });
+  }
+
   resolveWebviewView(
     webviewView: vscode.WebviewView,
     _context: vscode.WebviewViewResolveContext,
@@ -47,6 +54,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.onDidReceiveMessage(async (msg) => {
       switch (msg.type) {
         case 'ready':
+          this.pushThemeColors();
           break;
 
         case 'search':
@@ -678,6 +686,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       user-select: none;
     }
   </style>
+  <!-- Dynamic theme symbol-kind colors (updated via postMessage on theme change) -->
+  <style id="theme-tokens">${generateSymbolKindCss()}</style>
 </head>
 <body>
   <div id="header">
@@ -801,6 +811,13 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         graphContainer.style.display = 'none';
         symbolNameEl.textContent = msg.symbolName;
         fileNameEl.textContent = '';
+        return;
+      }
+
+      if (msg.type === 'themeColors') {
+        document.getElementById('theme-tokens').textContent = msg.css;
+        // Redraw graph in case it's visible, so node border colors update
+        if (viewMode === 'graph' && lastUpdateData) { graphDraw(); }
         return;
       }
 
@@ -1073,25 +1090,12 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       return nodeKindPrefix(kind);
     }
 
-    /* Return accent color for a kind */
+    /* Return accent color for a kind — reads CSS vars injected from real TextMate theme */
     function nodeKindColor(kind) {
-      const kindColors = {
-        'Function':  '#3b82f6',
-        'Method':    '#8b5cf6',
-        'Class':     '#f59e0b',
-        'Interface': '#06b6d4',
-        'Variable':  '#10b981',
-        'Constant':  '#10b981',
-        'Property':  '#ec4899',
-        'Field':     '#ec4899',
-        'Enum':      '#f97316',
-        'Module':    '#6366f1',
-        'Namespace': '#6366f1',
-        'Struct':    '#f59e0b',
-        'Ctor':      '#8b5cf6',
-        'Global':    '#6b7280',
-      };
-      return kindColors[kind] || null;
+      // 'Ctor' in map data maps to 'Constructor' CSS var
+      const cssKind = kind === 'Ctor' ? 'Constructor' : kind;
+      const v = getComputedStyle(document.documentElement).getPropertyValue('--peek-kind-' + cssKind).trim();
+      return v || null;
     }
 
     /* Tree layout: left-to-right, depth-first */

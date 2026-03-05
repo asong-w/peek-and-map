@@ -3,7 +3,7 @@ import * as path from 'path';
 import { LANG_MAP } from './constants';
 import { ContextInfo } from './types';
 import { getNonce } from './utils';
-import { generateThemeTokenCss } from './theme';
+import { generateThemeTokenCss, generateSymbolKindCss } from './theme';
 
 export class PeekViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'peekView.view';
@@ -37,7 +37,10 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
   /** Push current theme token colors to the webview. */
   pushThemeColors(): void {
     if (!this._view) { return; }
-    this._view.webview.postMessage({ type: 'themeColors', css: generateThemeTokenCss() });
+    this._view.webview.postMessage({
+      type: 'themeColors',
+      css: generateThemeTokenCss() + generateSymbolKindCss(),
+    });
   }
 
   resolveWebviewView(
@@ -448,7 +451,7 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     const autoloader  = webview.asWebviewUri(vscode.Uri.joinPath(mediaDir, 'prism-autoloader.min.js'));
     // Language components path for the autoloader (trailing slash required)
     const componentsUri = webview.asWebviewUri(vscode.Uri.joinPath(mediaDir, 'components')).toString() + '/';
-    const initialThemeCss = generateThemeTokenCss();
+    const initialThemeCss = generateThemeTokenCss() + generateSymbolKindCss();
 
     return /* html */`<!DOCTYPE html>
 <html lang="zh">
@@ -487,20 +490,13 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     }
 
     #kind-badge {
-      font-size: 10px;
-      font-weight: 700;
-      padding: 1px 6px;
-      border-radius: 3px;
-      background: var(--vscode-badge-background, #4d4d4d);
-      color: var(--vscode-badge-foreground, #fff);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+      font-size: 1.1em;
+      line-height: 1;
       flex-shrink: 0;
     }
 
     #symbol-name {
       font-weight: 600;
-      color: var(--vscode-symbolIcon-functionForeground, #dcdcaa);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -669,6 +665,7 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
 
     let currentCursorLine  = 0;
     let currentDefUri      = null; // vscode URI string of the definition file
+    let currentSymbolKind  = null; // last displayed symbol kind
     let pendingRenderArgs  = null; // 等待语法高亮组件加载完成后重绘
 
     // ── 前进 / 后退按钮 ─────────────────────────────────────────────────────
@@ -690,6 +687,39 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
       }
     });
 
+    // ── Kind symbol / color helpers (mirrors mapView) ───────────────────────
+    function kindSymbol(kind) {
+      const map = {
+        'Function':  '⨍',
+        'Method':    '◈',
+        'Class':     '◆',
+        'Interface': '◇',
+        'Variable':  '▽',
+        'Constant':  '▼',
+        'Property':  '◉',
+        'Field':     '○',
+        'Enum':      '▣',
+        'Module':    '◫',
+        'Namespace': '◧',
+        'Struct':    '▢',
+        'Constructor': '⊕',
+        'File':      '○',
+      };
+      return map[kind] || '•';
+    }
+
+    function kindColor(kind) {
+      // Read the CSS var injected from the real TextMate theme (see generateSymbolKindCss).
+      const v = getComputedStyle(document.documentElement).getPropertyValue('--peek-kind-' + kind).trim();
+      return v || null;
+    }
+
+    function applyKindColors(kind) {
+      const color = kindColor(kind);
+      kindBadge.style.color    = color || 'var(--vscode-foreground, #ccc)';
+      symbolNameEl.style.color = color || 'var(--vscode-editor-foreground, #d4d4d4)';
+    }
+
     // ── 接收来自扩展的消息 ────────────────────────────────────────────────────
     window.addEventListener('message', (event) => {
       const msg = event.data;
@@ -699,13 +729,17 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
         emptyMsg.style.display      = 'flex';
         codeContainer.style.display = 'none';
         kindBadge.textContent       = '—';
+        kindBadge.style.color       = '';
         symbolNameEl.textContent    = 'Peek View';
+        symbolNameEl.style.color    = '';
+        currentSymbolKind           = null;
         document.getElementById('file-name').textContent = '';
         return;
       }
 
       if (msg.type === 'themeColors') {
         document.getElementById('theme-tokens').textContent = msg.css;
+        if (currentSymbolKind) { applyKindColors(currentSymbolKind); }
         return;
       }
 
@@ -721,9 +755,11 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
         currentCursorLine = cursorLine;
         currentDefUri     = defUri || null;
 
-        kindBadge.textContent       = symbolKind;
-        symbolNameEl.textContent    = symbolName;
-        document.getElementById('file-name').textContent = fileName ? '  ' + fileName : '';
+        kindBadge.textContent    = kindSymbol(symbolKind);
+        symbolNameEl.textContent = symbolName;
+        currentSymbolKind = symbolKind;
+        applyKindColors(symbolKind);
+        document.getElementById('file-name').textContent = fileName ? '  ' + fileName + ':' + (cursorLine + 1) : '';
         emptyMsg.style.display      = 'none';
         codeContainer.style.display = 'block';
 

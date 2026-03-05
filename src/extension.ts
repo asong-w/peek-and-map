@@ -55,7 +55,10 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.window.onDidChangeActiveColorTheme(() => {
       // Small delay so VS Code finishes applying the new theme internally
-      setTimeout(() => peekprovider.pushThemeColors(), 300);
+      setTimeout(() => {
+        peekprovider.pushThemeColors();
+        mapProvider.pushThemeColors();
+      }, 300);
     })
   );
 

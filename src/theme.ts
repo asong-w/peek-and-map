@@ -95,6 +95,42 @@ function findBestSetting(
   return undefined;
 }
 
+// ── Symbol-kind → TextMate scopes ────────────────────────────────────────────
+const SYMBOL_KIND_TO_TM: Record<string, string[]> = {
+  'Function':    ['entity.name.function', 'support.function'],
+  'Method':      ['entity.name.function', 'support.function'],
+  'Constructor': ['entity.name.function', 'support.function'],
+  'Class':       ['entity.name.type', 'entity.name.class', 'support.class'],
+  'Interface':   ['entity.name.type', 'entity.name.interface', 'support.class'],
+  'Struct':      ['entity.name.type', 'entity.name.struct'],
+  'Enum':        ['entity.name.type', 'entity.name.enum'],
+  'Variable':    ['variable', 'variable.other'],
+  'Constant':    ['variable.other.constant', 'constant.other', 'constant'],
+  'Property':    ['variable.other.property', 'support.type.property-name', 'variable'],
+  'Field':       ['variable.other.property', 'variable.other.readwrite.member', 'variable'],
+  'Module':      ['entity.name.namespace', 'entity.name.module', 'entity.name.type'],
+  'Namespace':   ['entity.name.namespace', 'entity.name.module', 'entity.name.type'],
+  'File':        ['string', 'variable'],
+};
+
+/**
+ * Generate CSS custom properties like `--peek-kind-Function: #dcdcaa;`
+ * so the webview can reference the real theme color for each symbol kind.
+ */
+export function generateSymbolKindCss(): string {
+  const rules = resolveActiveThemeTokenColors();
+  if (rules.length === 0) { return ''; }
+  let vars = ':root {\n';
+  for (const [kind, scopes] of Object.entries(SYMBOL_KIND_TO_TM)) {
+    const setting = findBestSetting(scopes, rules);
+    if (setting?.foreground) {
+      vars += `  --peek-kind-${kind}: ${setting.foreground};\n`;
+    }
+  }
+  vars += '}\n';
+  return vars;
+}
+
 /** Generate CSS for all Prism token classes from the current VS Code theme. */
 export function generateThemeTokenCss(): string {
   const rules = resolveActiveThemeTokenColors();
