@@ -1088,20 +1088,100 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       return nodeKindPrefix(kind);
     }
 
-    /* Convert #rrggbb hex to rgba(r,g,b,a) string */
-    function hexToRgba(hex, alpha) {
-      const h = (hex || '').replace('#', '');
-      if (h.length < 6) { return 'rgba(128,128,128,' + alpha + ')'; }
-      const r = parseInt(h.slice(0, 2), 16);
-      const g = parseInt(h.slice(2, 4), 16);
-      const b = parseInt(h.slice(4, 6), 16);
-      return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+    /* Parse common CSS color formats into numeric RGBA */
+    function parseCssColor(colorText) {
+      const t = (colorText || '').trim();
+      if (!t) return null;
+
+      // #RGB / #RGBA / #RRGGBB / #RRGGBBAA
+      if (t[0] === '#') {
+        const h = t.slice(1);
+        if (h.length === 3 || h.length === 4) {
+          const r = parseInt(h[0] + h[0], 16);
+          const g = parseInt(h[1] + h[1], 16);
+          const b = parseInt(h[2] + h[2], 16);
+          const a = h.length === 4 ? (parseInt(h[3] + h[3], 16) / 255) : 1;
+          if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b) || Number.isNaN(a)) return null;
+          return { r, g, b, a };
+        }
+        if (h.length === 6 || h.length === 8) {
+          const r = parseInt(h.slice(0, 2), 16);
+          const g = parseInt(h.slice(2, 4), 16);
+          const b = parseInt(h.slice(4, 6), 16);
+          const a = h.length === 8 ? (parseInt(h.slice(6, 8), 16) / 255) : 1;
+          if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b) || Number.isNaN(a)) return null;
+          return { r, g, b, a };
+        }
+      }
+
+      // rgb(...) / rgba(...)
+      const m = t.match(/^rgba?\(([^)]+)\)$/i);
+      if (m) {
+        const parts = m[1].split(',').map(p => p.trim());
+        if (parts.length === 3 || parts.length === 4) {
+          const r = Number(parts[0]);
+          const g = Number(parts[1]);
+          const b = Number(parts[2]);
+          const a = parts.length === 4 ? Number(parts[3]) : 1;
+          if ([r, g, b, a].some(v => Number.isNaN(v))) return null;
+          return {
+            r: Math.max(0, Math.min(255, r)),
+            g: Math.max(0, Math.min(255, g)),
+            b: Math.max(0, Math.min(255, b)),
+            a: Math.max(0, Math.min(1, a)),
+          };
+        }
+      }
+
+      return null;
+    }
+
+    function colorToRgba(colorText, alpha) {
+      const c = parseCssColor(colorText);
+      if (!c) { return 'rgba(128,128,128,' + alpha + ')'; }
+      return 'rgba(' + c.r + ',' + c.g + ',' + c.b + ',' + alpha + ')';
+    }
+
+    function srgbToLinear(v) {
+      const x = v / 255;
+      return x <= 0.03928 ? (x / 12.92) : Math.pow((x + 0.055) / 1.055, 2.4);
+    }
+
+    function relativeLuminance(colorText) {
+      const c = parseCssColor(colorText);
+      if (!c) return null;
+      const r = srgbToLinear(c.r);
+      const g = srgbToLinear(c.g);
+      const b = srgbToLinear(c.b);
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    }
+
+    function contrastRatio(fg, bg) {
+      const l1 = relativeLuminance(fg);
+      const l2 = relativeLuminance(bg);
+      if (l1 === null || l2 === null) return 1;
+      const hi = Math.max(l1, l2);
+      const lo = Math.min(l1, l2);
+      return (hi + 0.05) / (lo + 0.05);
+    }
+
+    function ensureReadableColor(primary, bg, fallback, minRatio) {
+      if (contrastRatio(primary, bg) >= minRatio) return primary;
+      if (contrastRatio(fallback, bg) >= minRatio) return fallback;
+      const white = '#ffffff';
+      const black = '#000000';
+      return contrastRatio(white, bg) >= contrastRatio(black, bg) ? white : black;
+    }
+
+    function cssVar(styles, name, fallback) {
+      const v = (styles.getPropertyValue(name) || '').trim();
+      return v || fallback;
     }
 
     /* Return semi-transparent background color for a kind badge */
     function kindBgColor(kind) {
       const color = nodeKindColor(kind);
-      return color ? hexToRgba(color, 0.18) : 'rgba(128,128,128,0.18)';
+      return color ? colorToRgba(color, 0.18) : 'rgba(128,128,128,0.18)';
     }
 
     /* Return accent color for a kind — reads CSS vars injected from real TextMate theme */
@@ -1333,15 +1413,19 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       const nodeMap = {};
       for (const n of gNodes) nodeMap[n.id] = n;
 
-      const fg = getComputedStyle(document.body).color || '#d4d4d4';
-      const dimColor = getComputedStyle(document.body).getPropertyValue('--vscode-descriptionForeground') || '#858585';
-      const accentColor = getComputedStyle(document.body).getPropertyValue('--vscode-panelTitle-activeBorder') || '#007acc';
-      const nodeBg = getComputedStyle(document.body).getPropertyValue('--vscode-sideBarSectionHeader-background') || '#252526';
-      const hoverBg = getComputedStyle(document.body).getPropertyValue('--vscode-list-hoverBackground') || 'rgba(255,255,255,0.05)';
-      const funcColor = getComputedStyle(document.body).getPropertyValue('--vscode-symbolIcon-functionForeground') || '#dcdcaa';
+      const styles = getComputedStyle(document.body);
+      const canvasBg = cssVar(styles, '--vscode-panel-background', '#1e1e1e');
+      const fg = (styles.color || '#d4d4d4').trim();
+      const dimBase = cssVar(styles, '--vscode-descriptionForeground', '#858585');
+      const accentColor = cssVar(styles, '--vscode-panelTitle-activeBorder', '#007acc');
+      const nodeBg = cssVar(styles, '--vscode-editorWidget-background', cssVar(styles, '--vscode-sideBarSectionHeader-background', '#252526'));
+      const hoverBg = cssVar(styles, '--vscode-list-hoverBackground', 'rgba(255,255,255,0.05)');
+      const funcColor = cssVar(styles, '--vscode-symbolIcon-functionForeground', '#dcdcaa');
+      const edgeColor = ensureReadableColor(dimBase, canvasBg, fg, 2.2);
+      const dimColor = ensureReadableColor(dimBase, nodeBg, fg, 2.2);
 
       // Draw edges
-      ctx.strokeStyle = dimColor;
+      ctx.strokeStyle = colorToRgba(edgeColor, 0.8);
       ctx.lineWidth = 1.2;
       for (const e of gEdges) {
         const from = nodeMap[e.from];
@@ -1389,9 +1473,11 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         const isHover = gHover === n.id;
 
         // Node shape: all use rounded rectangle, kind distinguished by prefix icon
-        const kindBorderColor = nodeKindColor(n.kind) || dimColor;
-        ctx.fillStyle = isHover ? (hoverBg.includes('rgba') ? 'rgba(255,255,255,0.1)' : hoverBg) : nodeBg;
-        ctx.strokeStyle = isHover ? accentColor : kindBorderColor;
+        const rawKindColor = nodeKindColor(n.kind) || funcColor;
+        const kindBorderColor = ensureReadableColor(rawKindColor, nodeBg, fg, 2.4);
+        const nodeFill = isHover ? hoverBg : nodeBg;
+        ctx.fillStyle = nodeFill;
+        ctx.strokeStyle = isHover ? ensureReadableColor(accentColor, nodeFill, fg, 2.4) : kindBorderColor;
         ctx.lineWidth = isHover ? 2 : 1.5;
         const ncx = n.x + n.w / 2, ncy = n.y + n.h / 2;
         const r = 5;
@@ -1439,7 +1525,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         const startX    = ncx - totalW / 2;
 
         // Badge rounded-rect background
-        ctx.fillStyle = hexToRgba(kindBorderColor, 0.22);
+        ctx.fillStyle = colorToRgba(kindBorderColor, 0.22);
         const bY = labelY - badgeH / 2;
         ctx.beginPath();
         ctx.roundRect(startX, bY, badgeW, badgeH, 3);
@@ -1454,7 +1540,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
         // Label text
         ctx.font = drawFont;
-        ctx.fillStyle = nodeKindColor(n.kind) || funcColor;
+        ctx.fillStyle = ensureReadableColor(rawKindColor, nodeFill, fg, 3.0);
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
         ctx.fillText(rawLabel, startX + badgeW + badgeGap, labelY);
@@ -1478,13 +1564,15 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
             const isHot = (gHover === n.id && gHoverCallSite === si);
 
             // Badge background
-            ctx.fillStyle = isHot ? hexToRgba(accentColor, 0.35) : hexToRgba(dimColor, 0.18);
+            ctx.fillStyle = isHot ? colorToRgba(accentColor, 0.35) : colorToRgba(dimColor, 0.18);
             ctx.beginPath();
             ctx.roundRect(bx, by, bw, bh, 2);
             ctx.fill();
 
             // Badge text
-            ctx.fillStyle = isHot ? accentColor : dimColor;
+            ctx.fillStyle = isHot
+              ? ensureReadableColor(accentColor, nodeFill, fg, 3.0)
+              : ensureReadableColor(dimColor, nodeFill, fg, 3.0);
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText(txt, bx + bw / 2, by + bh / 2);
