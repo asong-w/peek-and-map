@@ -297,16 +297,19 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
       .getConfiguration('peekView')
       .get<number>('contextPadding', 30);
 
-    const best = this._deepestContaining(symbols, pos);
+    const best = this._deepestContainingWithAncestors(symbols, pos);
     if (best) {
-      const { code, startLine } = this._expandedText(defDoc, best.range, padding);
+      const ownerClass =
+        this._nearestOwnerClassName(best.ancestors) ??
+        this._inferCppOwnerClass(best.symbol.name, defDoc.lineAt(best.symbol.selectionRange.start.line).text, defDoc.languageId);
+      const { code, startLine } = this._expandedText(defDoc, best.symbol.range, padding);
       return {
         code,
         language: LANG_MAP[defDoc.languageId] ?? 'clike',
         startLine,
         cursorLine: pos.line,
-        symbolName: best.name,
-        symbolKind: this._kindName(best.kind),
+        symbolName: this._formatSymbolWithOwner(best.symbol.name, ownerClass, best.symbol.kind),
+        symbolKind: this._kindName(best.symbol.kind),
         filePath: uri.fsPath,
         defUri: defUriStr,
         fileName,
@@ -349,19 +352,22 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     cursor: vscode.Position,
     symbols: vscode.DocumentSymbol[]
   ): ContextInfo | null {
-    const best = this._deepestContaining(symbols, cursor);
+    const best = this._deepestContainingWithAncestors(symbols, cursor);
     if (!best) { return null; }
+    const ownerClass =
+      this._nearestOwnerClassName(best.ancestors) ??
+      this._inferCppOwnerClass(best.symbol.name, doc.lineAt(best.symbol.selectionRange.start.line).text, doc.languageId);
     const padding = vscode.workspace
       .getConfiguration('peekView')
       .get<number>('contextPadding', 30);
-    const { code, startLine } = this._expandedText(doc, best.range, padding);
+    const { code, startLine } = this._expandedText(doc, best.symbol.range, padding);
     return {
       code,
       language: LANG_MAP[doc.languageId] ?? 'clike',
       startLine,
       cursorLine: cursor.line,
-      symbolName: best.name,
-      symbolKind: this._kindName(best.kind),
+      symbolName: this._formatSymbolWithOwner(best.symbol.name, ownerClass, best.symbol.kind),
+      symbolKind: this._kindName(best.symbol.kind),
       filePath: doc.uri.fsPath,
       defUri: doc.uri.toString(),
       fileName: path.basename(doc.uri.fsPath),
@@ -384,6 +390,72 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
       }
     }
     return best;
+  }
+
+  private _deepestContainingWithAncestors(
+    symbols: vscode.DocumentSymbol[],
+    pos: vscode.Position,
+    ancestors: vscode.DocumentSymbol[] = []
+  ): { symbol: vscode.DocumentSymbol; ancestors: vscode.DocumentSymbol[] } | undefined {
+    let best: { symbol: vscode.DocumentSymbol; ancestors: vscode.DocumentSymbol[] } | undefined;
+    for (const sym of symbols) {
+      if (!sym.range.contains(pos)) { continue; }
+      const nextAncestors = [...ancestors, sym];
+      const child = this._deepestContainingWithAncestors(sym.children, pos, nextAncestors);
+      const candidate = child ?? { symbol: sym, ancestors: nextAncestors };
+      if (!best || this._rangeSize(candidate.symbol.range) < this._rangeSize(best.symbol.range)) {
+        best = candidate;
+      }
+    }
+    return best;
+  }
+
+  private _nearestOwnerClassName(ancestors: vscode.DocumentSymbol[]): string | undefined {
+    for (let i = ancestors.length - 2; i >= 0; i--) {
+      const k = ancestors[i].kind;
+      if (k === vscode.SymbolKind.Class || k === vscode.SymbolKind.Struct || k === vscode.SymbolKind.Interface) {
+        return ancestors[i].name;
+      }
+    }
+    return undefined;
+  }
+
+  private _inferCppOwnerClass(name: string, lineText: string, languageId: string): string | undefined {
+    if (!this._isCppLanguage(languageId)) { return undefined; }
+
+    const fromName = this._ownerFromQualifiedName(name);
+    if (fromName) { return fromName; }
+
+    const simpleName = this._simpleSymbolName(name);
+    const m = lineText.match(/([~A-Za-z_][\w:]*)\s*::\s*([~A-Za-z_]\w*)\s*\(/);
+    if (!m) { return undefined; }
+    const methodName = m[2];
+    if (!simpleName || methodName === simpleName || methodName === `~${simpleName}`) {
+      return m[1];
+    }
+    return undefined;
+  }
+
+  private _isCppLanguage(languageId: string): boolean {
+    return languageId === 'cpp' || languageId === 'c' || languageId === 'cuda-cpp' || languageId === 'objective-cpp';
+  }
+
+  private _ownerFromQualifiedName(name: string): string | undefined {
+    const noParams = name.replace(/\(.*$/, '').trim();
+    const idx = noParams.lastIndexOf('::');
+    if (idx <= 0) { return undefined; }
+    return noParams.slice(0, idx).trim() || undefined;
+  }
+
+  private _simpleSymbolName(name: string): string {
+    const noParams = name.replace(/\(.*$/, '').trim();
+    const idx = noParams.lastIndexOf('::');
+    return idx >= 0 ? noParams.slice(idx + 2) : noParams;
+  }
+
+  private _formatSymbolWithOwner(name: string, ownerClass: string | undefined, _kind: vscode.SymbolKind): string {
+    if (!ownerClass) { return name; }
+    return `${ownerClass}::${name}`;
   }
 
   /**
@@ -509,6 +581,12 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
       text-overflow: ellipsis;
       white-space: nowrap;
       flex: 1;
+    }
+    #symbol-name .owner {
+      color: var(--peek-qualified-owner, var(--peek-kind-Class, var(--vscode-symbolIcon-classForeground, var(--vscode-editor-foreground, #d4d4d4))));
+    }
+    #symbol-name .scope-op {
+      color: var(--peek-operator, var(--vscode-editor-foreground, #d4d4d4));
     }
 
     #file-name {
@@ -735,7 +813,26 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
       const color = kindColor(kind);
       kindBadge.style.color           = color || 'var(--vscode-foreground, #ccc)';
       kindBadge.style.backgroundColor = color ? hexToRgba(color, 0.18) : 'var(--vscode-badge-background, rgba(100,100,100,0.25))';
-      symbolNameEl.style.color        = color || 'var(--vscode-editor-foreground, #d4d4d4)';
+      symbolNameEl.style.color        = '';
+    }
+
+    function splitQualifiedName(name) {
+      const s = (name || '').trim();
+      const idx = s.lastIndexOf('::');
+      if (idx <= 0 || idx + 2 >= s.length) return null;
+      return { owner: s.slice(0, idx), member: s.slice(idx + 2) };
+    }
+
+    function renderHeaderSymbolName(name, symbolKind) {
+      const part = splitQualifiedName(name || '');
+      const kindKey = symbolKind === 'Ctor' ? 'Constructor' : (symbolKind || 'Function');
+      const memberColor = kindColor(kindKey) || 'var(--vscode-editor-foreground, #d4d4d4)';
+      if (!part) {
+        return '<span style="color:' + memberColor + '">' + escapeHtml(name || '') + '</span>';
+      }
+      return '<span class="owner">' + escapeHtml(part.owner) + '</span>'
+        + '<span class="scope-op">::</span>'
+        + '<span style="color:' + memberColor + '">' + escapeHtml(part.member) + '</span>';
     }
 
     // ── 接收来自扩展的消息 ────────────────────────────────────────────────────
@@ -775,7 +872,7 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
         currentDefUri     = defUri || null;
 
         kindBadge.textContent    = kindSymbol(symbolKind);
-        symbolNameEl.textContent = symbolName;
+        symbolNameEl.innerHTML = renderHeaderSymbolName(symbolName, symbolKind);
         currentSymbolKind = symbolKind;
         applyKindColors(symbolKind);
         document.getElementById('file-name').textContent = fileName ? '  ' + fileName + ':' + (cursorLine + 1) : '';
@@ -960,7 +1057,7 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     function scrollCursorIntoView() {
       const row = codeContainer.querySelector('tr.cursor-line');
       if (row) {
-        row.scrollIntoView({ block: 'center', behavior: 'auto' });
+        row.scrollIntoView({ block: 'start', behavior: 'auto' });
       }
     }
   </script>

@@ -127,6 +127,28 @@ export function generateSymbolKindCss(): string {
       vars += `  --peek-kind-${kind}: ${setting.foreground};\n`;
     }
   }
+
+  const ownerSetting = findBestSetting(
+    ['entity.name.type', 'entity.name.class', 'support.class'],
+    rules
+  );
+  if (ownerSetting?.foreground) {
+    vars += `  --peek-qualified-owner: ${ownerSetting.foreground};\n`;
+  }
+
+  const operatorSetting = findBestSetting(
+    [
+      'punctuation.separator.scope-resolution',
+      'keyword.operator.scope-resolution',
+      'keyword.operator',
+      'punctuation.separator',
+    ],
+    rules
+  );
+  if (operatorSetting?.foreground) {
+    vars += `  --peek-operator: ${operatorSetting.foreground};\n`;
+  }
+
   vars += '}\n';
   return vars;
 }
