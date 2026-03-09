@@ -7,6 +7,7 @@ import { generateThemeTokenCss, generateSymbolKindCss } from './theme';
 
 export class MapViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'mapView.view';
+  private static readonly VIEW_MODE_STATE_KEY = 'mapView.viewMode';
 
   private _view?: vscode.WebviewView;
   private _lastKnownEditor?: vscode.TextEditor;
@@ -15,8 +16,25 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
   private _refNodeMap = new Map<string, { uri: vscode.Uri; position: vscode.Position }>();
   private _nodeCounter = 0;
   private _peekView?: PeekViewProvider;
+  private _viewMode: 'tree' | 'graph' | 'graph-up';
 
-  constructor(private readonly _extensionUri: vscode.Uri) {}
+  constructor(
+    private readonly _extensionUri: vscode.Uri,
+    private readonly _context: vscode.ExtensionContext
+  ) {
+    this._viewMode = this._normalizeViewMode(
+      this._context.workspaceState.get<string>(MapViewProvider.VIEW_MODE_STATE_KEY)
+    );
+  }
+
+  private _normalizeViewMode(mode: unknown): 'tree' | 'graph' | 'graph-up' {
+    return mode === 'graph' || mode === 'graph-up' ? mode : 'tree';
+  }
+
+  private async _saveViewMode(mode: unknown): Promise<void> {
+    this._viewMode = this._normalizeViewMode(mode);
+    await this._context.workspaceState.update(MapViewProvider.VIEW_MODE_STATE_KEY, this._viewMode);
+  }
 
   /** Provide a reference to the PeekViewProvider so single-click can update it directly. */
   setPeekView(pv: PeekViewProvider): void {
@@ -54,6 +72,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       switch (msg.type) {
         case 'ready':
           this.pushThemeColors();
+          webviewView.webview.postMessage({ type: 'initViewMode', mode: this._viewMode });
           break;
 
         case 'search':
@@ -85,6 +104,10 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           await this._peekView?.peekLocation(uri, pos);
           break;
         }
+
+        case 'setViewMode':
+          await this._saveViewMode(msg.mode);
+          break;
       }
     });
   }
@@ -753,11 +776,16 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       return mode === 'graph' || mode === 'graph-up';
     }
 
-    function setViewMode(mode) {
-      viewMode = mode;
-      graphDirection = mode === 'graph-up' ? 'up' : 'right';
+    function normalizeViewMode(mode) {
+      return mode === 'graph' || mode === 'graph-up' ? mode : 'tree';
+    }
+
+    function setViewMode(mode, options) {
+      const opts = options || {};
+      viewMode = normalizeViewMode(mode);
+      graphDirection = viewMode === 'graph-up' ? 'up' : 'right';
       updateViewTabs();
-      if (isGraphMode(mode)) {
+      if (isGraphMode(viewMode)) {
         content.style.display = 'none';
         graphContainer.style.display = 'block';
         if (lastUpdateData) {
@@ -774,6 +802,10 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           renderTreeList(refSection, rootNode ? [rootNode] : (lastUpdateData.refNodes || []), 0);
           restoreTreeExpansions(refSection);
         }
+      }
+
+      if (opts.persist !== false) {
+        vscodeApi.postMessage({ type: 'setViewMode', mode: viewMode });
       }
     }
 
@@ -811,6 +843,11 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         document.getElementById('theme-tokens').textContent = msg.css;
         // Redraw graph in case it's visible, so node border colors update
         if (isGraphMode(viewMode) && lastUpdateData) { graphDraw(); }
+        return;
+      }
+
+      if (msg.type === 'initViewMode') {
+        setViewMode(msg.mode, { persist: false });
         return;
       }
 
