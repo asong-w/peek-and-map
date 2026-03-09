@@ -694,8 +694,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     <button id="search-btn" title="Analyze symbol at cursor"><span class="btn-icon">🔍</span> Analysis</button>
     <div id="view-tabs" role="tablist" aria-label="Map View Mode">
       <button id="view-tab-tree" class="view-tab active" role="tab" aria-selected="true" title="Outline view">Outline</button>
-      <button id="view-tab-graph" class="view-tab" role="tab" aria-selected="false" title="Horizontal graph view">Horiz</button>
-      <button id="view-tab-graph-up" class="view-tab" role="tab" aria-selected="false" title="Vertical graph view">Vert</button>
+      <button id="view-tab-graph" class="view-tab" role="tab" aria-selected="false" title="Horizontal graph view">Horizontal</button>
+      <button id="view-tab-graph-up" class="view-tab" role="tab" aria-selected="false" title="Vertical graph view">Vertical</button>
     </div>
     <span id="header-spacer"></span>
   </div>
@@ -710,7 +710,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
   </div>
   <div id="graph-container">
     <canvas id="graph-canvas"></canvas>
-    <div id="graph-hint">Click = peek · Double-click = open &amp; peek · Ctrl+click = expand/collapse · Scroll = zoom · Drag = pan</div>
+    <div id="graph-hint">Click = peek · Double-click = open &amp; peek · +/- icon = expand/collapse · Scroll = zoom · Drag = pan</div>
   </div>
 
   <script nonce="${nonce}">
@@ -1013,6 +1013,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
                 parentId: n.id,
                 callSites: mg.callSites,
                 _callBadgeRects: [],
+                _toggleRect: null,
               };
               gNodes.push(newNode);
               nodeMap[newNode.id] = newNode;
@@ -1087,7 +1088,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     // ══════════════════════════════════════════════════════════════════════
 
     const ctx = graphCanvas.getContext('2d');
-    let gNodes = [];   // {id, label, kind, x, y, w, h, children:[], expanded, loading, data, parentId, callSites:[], _callBadgeRects:[]}
+    let gNodes = [];   // {id, label, kind, x, y, w, h, children:[], expanded, loading, data, parentId, callSites:[], _callBadgeRects:[], _toggleRect}
     let gEdges = [];   // {from, to}
     let gPan = {x: 0, y: 0};
     let gZoom = 1;
@@ -1163,6 +1164,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         parentId: null,
         callSites: null,
         _callBadgeRects: [],
+        _toggleRect: null,
       });
 
       // Combine refNodes as first-level children (merge duplicates)
@@ -1182,6 +1184,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           parentId: rootId,
           callSites: mg.callSites,
           _callBadgeRects: [],
+          _toggleRect: null,
         });
         gNodes[0].children.push(nid);
         gEdges.push({ from: rootId, to: nid });
@@ -1217,6 +1220,12 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         'Root':      'R',
       };
       return prefixes[kind] || '?';
+    }
+
+    function graphNodeCanToggle(node) {
+      if (!node) return false;
+      if (!node.data || !node.data.nodeId) return true;
+      return !String(node.data.nodeId).startsWith('leaf_');
     }
 
     /* Return symbol for a kind (used in tree view) */
@@ -1613,6 +1622,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       const font = fontSize + 'px ' + getComputedStyle(document.body).fontFamily;
       for (const n of gNodes) {
         const isHover = gHover === n.id;
+        n._toggleRect = null;
 
         // Node shape: all use rounded rectangle, kind distinguished by prefix icon
         const rawKindColor = nodeKindColor(n.kind) || funcColor;
@@ -1708,6 +1718,46 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         ctx.fillStyle = memberColor;
         ctx.fillText(memberText, textX, labelY);
 
+        // Expand/collapse toggle icon (on node extension side)
+        if (graphNodeCanToggle(n)) {
+          const toggleSize = 12;
+          const toggleGap = 5;
+          let tx;
+          let ty;
+          if (graphDirection === 'up') {
+            tx = n.x + n.w / 2 - toggleSize / 2;
+            ty = n.y - toggleGap - toggleSize;
+          } else {
+            tx = n.x + n.w + toggleGap;
+            ty = n.y + n.h / 2 - toggleSize / 2;
+          }
+          n._toggleRect = { x: tx, y: ty, w: toggleSize, h: toggleSize };
+
+          const toggleHover = (gHover === n.id && gHoverCallSite === -2);
+          ctx.fillStyle = toggleHover ? colorToRgba(accentColor, 0.28) : colorToRgba(dimColor, 0.16);
+          ctx.strokeStyle = toggleHover ? ensureReadableColor(accentColor, nodeFill, fg, 2.2) : colorToRgba(dimColor, 0.75);
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.roundRect(tx, ty, toggleSize, toggleSize, 3);
+          ctx.fill();
+          ctx.stroke();
+
+          const cx = tx + toggleSize / 2;
+          const cy = ty + toggleSize / 2;
+          ctx.strokeStyle = toggleHover
+            ? ensureReadableColor(accentColor, nodeFill, fg, 3.0)
+            : ensureReadableColor(dimColor, nodeFill, fg, 3.0);
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(cx - 3, cy);
+          ctx.lineTo(cx + 3, cy);
+          if (!n.expanded) {
+            ctx.moveTo(cx, cy - 3);
+            ctx.lineTo(cx, cy + 3);
+          }
+          ctx.stroke();
+        }
+
         // ── Call-site line-number badges (only for merged nodes) ──────────
         n._callBadgeRects = [];
         const cs = n.callSites;
@@ -1759,7 +1809,12 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       const wy = (cy - gPan.y) / gZoom;
       for (let i = gNodes.length - 1; i >= 0; i--) {
         const n = gNodes[i];
-        if (wx >= n.x && wx <= n.x + n.w + 14 && wy >= n.y && wy <= n.y + n.h) {
+        const r = n._toggleRect;
+        const minX = r ? Math.min(n.x, r.x) : n.x;
+        const maxX = r ? Math.max(n.x + n.w, r.x + r.w) : (n.x + n.w + 14);
+        const minY = r ? Math.min(n.y, r.y) : n.y;
+        const maxY = r ? Math.max(n.y + n.h, r.y + r.h) : n.y + n.h;
+        if (wx >= minX && wx <= maxX && wy >= minY && wy <= maxY) {
           return n;
         }
       }
@@ -1777,6 +1832,14 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         }
       }
       return -1;
+    }
+
+    function graphHitTestToggle(node, cx, cy) {
+      if (!node || !node._toggleRect) return false;
+      const wx = (cx - gPan.x) / gZoom;
+      const wy = (cy - gPan.y) / gZoom;
+      const r = node._toggleRect;
+      return wx >= r.x && wx <= r.x + r.w && wy >= r.y && wy <= r.y + r.h;
     }
 
     /* Handle children arriving from extension (graph mode) */
@@ -1812,6 +1875,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           parentId: parentNodeId,
           callSites: mg.callSites,
           _callBadgeRects: [],
+          _toggleRect: null,
         });
         parent.children.push(nid);
         gEdges.push({ from: parentNodeId, to: nid });
@@ -1864,7 +1928,14 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
       const hit = graphHitTest(cx, cy);
       const newHover = hit ? hit.id : null;
-      const newCallSite = hit ? graphHitTestCallSite(hit, cx, cy) : -1;
+      let newCallSite = -1;
+      if (hit) {
+        if (graphHitTestToggle(hit, cx, cy)) {
+          newCallSite = -2;
+        } else {
+          newCallSite = graphHitTestCallSite(hit, cx, cy);
+        }
+      }
       if (newHover !== gHover || newCallSite !== gHoverCallSite) {
         gHover = newHover;
         gHoverCallSite = newCallSite;
@@ -1899,7 +1970,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       graphDraw();
     }, { passive: false });
 
-    // Click: peek in context window (single), open in editor (double), expand/collapse (ctrl+click)
+    // Click: peek in context window (single), open in editor (double), expand/collapse (+/- icon)
     graphCanvas.addEventListener('click', (e) => {
       const rect = graphCanvas.getBoundingClientRect();
       const cx = e.clientX - rect.left;
@@ -1907,10 +1978,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       const hit = graphHitTest(cx, cy);
       if (!hit) return;
 
-      // Ctrl+click: expand/collapse
-      if (e.ctrlKey || e.metaKey) {
-        if (hit.data && hit.data.nodeId && hit.data.nodeId.startsWith('leaf_')) return;
-
+      if (graphHitTestToggle(hit, cx, cy)) {
         if (hit.expanded) {
           graphCollapse(hit);
           graphLayout();
@@ -1948,12 +2016,12 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
     // Double-click: open in editor
     graphCanvas.addEventListener('dblclick', (e) => {
-      if (e.ctrlKey || e.metaKey) return; // ctrl+dblclick ignored
       const rect = graphCanvas.getBoundingClientRect();
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
       const hit = graphHitTest(cx, cy);
       if (!hit || !hit.data) return;
+      if (graphHitTestToggle(hit, cx, cy)) return;
       const csIdx = graphHitTestCallSite(hit, cx, cy);
       const cs = hit.callSites;
       const cl = (csIdx >= 0 && cs) ? cs[csIdx].callLine : (hit.data.callLine != null ? hit.data.callLine : hit.data.line);
