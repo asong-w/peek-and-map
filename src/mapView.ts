@@ -8,6 +8,7 @@ import { generateThemeTokenCss, generateSymbolKindCss } from './theme';
 export class MapViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'mapView.view';
   private static readonly VIEW_MODE_STATE_KEY = 'mapView.viewMode';
+  private static readonly GRAPH_DIRECTION_STATE_KEY = 'mapView.graphDirection';
 
   private _view?: vscode.WebviewView;
   private _lastKnownEditor?: vscode.TextEditor;
@@ -16,24 +17,42 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
   private _refNodeMap = new Map<string, { uri: vscode.Uri; position: vscode.Position }>();
   private _nodeCounter = 0;
   private _peekView?: PeekViewProvider;
-  private _viewMode: 'tree' | 'graph' | 'graph-up';
+  private _viewMode: 'tree' | 'graph';
+  private _graphDirection: 'up' | 'down' | 'left' | 'right';
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
     private readonly _context: vscode.ExtensionContext
   ) {
+    const rawMode = this._context.workspaceState.get<string>(MapViewProvider.VIEW_MODE_STATE_KEY);
     this._viewMode = this._normalizeViewMode(
-      this._context.workspaceState.get<string>(MapViewProvider.VIEW_MODE_STATE_KEY)
+      rawMode
+    );
+    const fallbackDirection = rawMode === 'graph-up' ? 'up' : 'right';
+    this._graphDirection = this._normalizeGraphDirection(
+      this._context.workspaceState.get<string>(MapViewProvider.GRAPH_DIRECTION_STATE_KEY),
+      fallbackDirection
     );
   }
 
-  private _normalizeViewMode(mode: unknown): 'tree' | 'graph' | 'graph-up' {
-    return mode === 'graph' || mode === 'graph-up' ? mode : 'tree';
+  private _normalizeViewMode(mode: unknown): 'tree' | 'graph' {
+    return mode === 'graph' || mode === 'graph-up' ? 'graph' : 'tree';
   }
 
-  private async _saveViewMode(mode: unknown): Promise<void> {
+  private _normalizeGraphDirection(
+    direction: unknown,
+    fallback: 'up' | 'down' | 'left' | 'right' = 'right'
+  ): 'up' | 'down' | 'left' | 'right' {
+    return direction === 'up' || direction === 'down' || direction === 'left' || direction === 'right'
+      ? direction
+      : fallback;
+  }
+
+  private async _saveViewState(mode: unknown, direction: unknown): Promise<void> {
     this._viewMode = this._normalizeViewMode(mode);
+    this._graphDirection = this._normalizeGraphDirection(direction, this._graphDirection);
     await this._context.workspaceState.update(MapViewProvider.VIEW_MODE_STATE_KEY, this._viewMode);
+    await this._context.workspaceState.update(MapViewProvider.GRAPH_DIRECTION_STATE_KEY, this._graphDirection);
   }
 
   /** Provide a reference to the PeekViewProvider so single-click can update it directly. */
@@ -72,7 +91,11 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       switch (msg.type) {
         case 'ready':
           this.pushThemeColors();
-          webviewView.webview.postMessage({ type: 'initViewMode', mode: this._viewMode });
+          webviewView.webview.postMessage({
+            type: 'initViewState',
+            mode: this._viewMode,
+            direction: this._graphDirection,
+          });
           break;
 
         case 'search':
@@ -105,8 +128,12 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           break;
         }
 
+        case 'setViewState':
+          await this._saveViewState(msg.mode, msg.direction);
+          break;
+
         case 'setViewMode':
-          await this._saveViewMode(msg.mode);
+          await this._saveViewState(msg.mode, this._graphDirection);
           break;
       }
     });
@@ -553,6 +580,26 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       background: var(--vscode-tab-activeBackground, #1e1e1e);
       color: var(--vscode-tab-activeForeground, #fff);
     }
+    #graph-direction-wrap {
+      display: none;
+      align-items: center;
+      gap: 4px;
+      margin-left: 8px;
+      flex-shrink: 0;
+    }
+    #graph-direction-wrap label {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground, #858585);
+    }
+    #graph-direction {
+      height: 22px;
+      font-size: 12px;
+      border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border, #333));
+      background: var(--vscode-dropdown-background, var(--vscode-sideBarSectionHeader-background, #252526));
+      color: var(--vscode-dropdown-foreground, var(--vscode-foreground, #d4d4d4));
+      border-radius: 4px;
+      padding: 0 6px;
+    }
     #header-spacer { flex: 1; }
 
     /* ── Content ────────────────────────────────────────────────── */
@@ -717,8 +764,16 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     <button id="search-btn" title="Analyze symbol at cursor"><span class="btn-icon">🔍</span> Analysis</button>
     <div id="view-tabs" role="tablist" aria-label="Map View Mode">
       <button id="view-tab-tree" class="view-tab active" role="tab" aria-selected="true" title="Outline view">Outline</button>
-      <button id="view-tab-graph" class="view-tab" role="tab" aria-selected="false" title="Horizontal graph view">Horizontal</button>
-      <button id="view-tab-graph-up" class="view-tab" role="tab" aria-selected="false" title="Vertical graph view">Vertical</button>
+      <button id="view-tab-graph" class="view-tab" role="tab" aria-selected="false" title="Graph view">Graph</button>
+    </div>
+    <div id="graph-direction-wrap">
+      <label for="graph-direction">Direction</label>
+      <select id="graph-direction" title="Graph growth direction">
+        <option value="right">Right</option>
+        <option value="left">Left</option>
+        <option value="up">Up</option>
+        <option value="down">Down</option>
+      </select>
     </div>
     <span id="header-spacer"></span>
   </div>
@@ -745,7 +800,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     const searchBtn    = document.getElementById('search-btn');
     const viewTabTree  = document.getElementById('view-tab-tree');
     const viewTabGraph = document.getElementById('view-tab-graph');
-    const viewTabGraphUp = document.getElementById('view-tab-graph-up');
+    const graphDirectionWrap = document.getElementById('graph-direction-wrap');
+    const graphDirectionSelect = document.getElementById('graph-direction');
     const graphContainer = document.getElementById('graph-container');
     const graphCanvas   = document.getElementById('graph-canvas');
     const refSection    = document.getElementById('sec-references');
@@ -754,36 +810,41 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     const nodeChildrenCache = new Map();  // nodeId → children items[]
     const expandedNodeIds = new Set();    // nodeIds currently expanded
 
-    // ── View mode: 'tree' | 'graph' | 'graph-up' ─────────────────────────
+    // ── View mode: 'tree' | 'graph' ─────────────────────────────────────
     let viewMode = 'tree';
-    let graphDirection = 'right'; // 'right' | 'up'
+    let graphDirection = 'right'; // 'up' | 'down' | 'left' | 'right'
     // Store last update data for graph rendering
     let lastUpdateData = null;
 
     function updateViewTabs() {
       const treeActive = viewMode === 'tree';
       const graphActive = viewMode === 'graph';
-      const graphUpActive = viewMode === 'graph-up';
       viewTabTree.classList.toggle('active', treeActive);
       viewTabGraph.classList.toggle('active', graphActive);
-      viewTabGraphUp.classList.toggle('active', graphUpActive);
       viewTabTree.setAttribute('aria-selected', treeActive ? 'true' : 'false');
       viewTabGraph.setAttribute('aria-selected', graphActive ? 'true' : 'false');
-      viewTabGraphUp.setAttribute('aria-selected', graphUpActive ? 'true' : 'false');
+      graphDirectionWrap.style.display = graphActive ? 'inline-flex' : 'none';
     }
 
     function isGraphMode(mode) {
-      return mode === 'graph' || mode === 'graph-up';
+      return mode === 'graph';
     }
 
     function normalizeViewMode(mode) {
-      return mode === 'graph' || mode === 'graph-up' ? mode : 'tree';
+      return mode === 'graph' || mode === 'graph-up' ? 'graph' : 'tree';
     }
 
-    function setViewMode(mode, options) {
+    function normalizeGraphDirection(direction) {
+      return direction === 'up' || direction === 'down' || direction === 'left' || direction === 'right'
+        ? direction
+        : 'right';
+    }
+
+    function setViewState(mode, direction, options) {
       const opts = options || {};
       viewMode = normalizeViewMode(mode);
-      graphDirection = viewMode === 'graph-up' ? 'up' : 'right';
+      graphDirection = normalizeGraphDirection(direction != null ? direction : graphDirection);
+      graphDirectionSelect.value = graphDirection;
       updateViewTabs();
       if (isGraphMode(viewMode)) {
         content.style.display = 'none';
@@ -805,13 +866,13 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       }
 
       if (opts.persist !== false) {
-        vscodeApi.postMessage({ type: 'setViewMode', mode: viewMode });
+        vscodeApi.postMessage({ type: 'setViewState', mode: viewMode, direction: graphDirection });
       }
     }
 
-    viewTabTree.addEventListener('click', () => setViewMode('tree'));
-    viewTabGraph.addEventListener('click', () => setViewMode('graph'));
-    viewTabGraphUp.addEventListener('click', () => setViewMode('graph-up'));
+    viewTabTree.addEventListener('click', () => setViewState('tree', graphDirection));
+    viewTabGraph.addEventListener('click', () => setViewState('graph', graphDirection));
+    graphDirectionSelect.addEventListener('change', () => setViewState('graph', graphDirectionSelect.value));
 
     // ── Search button ────────────────────────────────────────────────────
     searchBtn.addEventListener('click', () => {
@@ -846,8 +907,13 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
+      if (msg.type === 'initViewState') {
+        setViewState(msg.mode, msg.direction, { persist: false });
+        return;
+      }
+
       if (msg.type === 'initViewMode') {
-        setViewMode(msg.mode, { persist: false });
+        setViewState(msg.mode, graphDirection, { persist: false });
         return;
       }
 
@@ -1459,8 +1525,9 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         if (lv > maxLevel) maxLevel = lv;
       }
 
-      if (graphDirection === 'up') {
-        // Position: Y by level (upward), X spread horizontally
+      if (graphDirection === 'up' || graphDirection === 'down') {
+        // Position: Y by level, X spread horizontally
+        const yDir = graphDirection === 'up' ? -1 : 1;
         const levelMaxH = {};
         for (let lv = 0; lv <= maxLevel; lv++) {
           const group = byLevel[lv] || [];
@@ -1520,10 +1587,11 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           }
           prevLevelOrder = currentOrder;
 
-          yOffset -= levelMaxH[lv] + G_LEVEL_GAP_Y;
+          yOffset += yDir * (levelMaxH[lv] + G_LEVEL_GAP_Y);
         }
       } else {
         // Position: X by level, Y spread vertically
+        const xDir = graphDirection === 'left' ? -1 : 1;
         let xOffset = 40;
         let prevLevelOrder = new Map();
         for (let lv = 0; lv <= maxLevel; lv++) {
@@ -1577,7 +1645,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           }
           prevLevelOrder = currentOrder;
 
-          xOffset += maxW + G_LEVEL_GAP_X;
+          xOffset += xDir * (maxW + G_LEVEL_GAP_X);
         }
       }
 
@@ -1865,18 +1933,18 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         ctx.strokeStyle = colorToRgba(edgeColor, 0.8);
         ctx.lineWidth = 1.2;
         let x1, y1, x2, y2, cp1x, cp1y, cp2x, cp2y;
-        if (graphDirection === 'up') {
+        if (graphDirection === 'up' || graphDirection === 'down') {
           x1 = from.x + from.w / 2;
-          y1 = from.y;
+          y1 = graphDirection === 'up' ? from.y : (from.y + from.h);
           x2 = to.x + to.w / 2;
-          y2 = to.y + to.h;
+          y2 = graphDirection === 'up' ? (to.y + to.h) : to.y;
           const cpy = (y1 + y2) / 2;
           cp1x = x1; cp1y = cpy;
           cp2x = x2; cp2y = cpy;
         } else {
-          x1 = from.x + from.w;
+          x1 = graphDirection === 'left' ? from.x : (from.x + from.w);
           y1 = from.y + from.h / 2;
-          x2 = to.x;
+          x2 = graphDirection === 'left' ? (to.x + to.w) : to.x;
           y2 = to.y + to.h / 2;
           const cpx = (x1 + x2) / 2;
           cp1x = cpx; cp1y = y1;
@@ -1890,7 +1958,14 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
         // Arrow head
         const arrowSize = 5;
-        const finalAngle = graphDirection === 'up' ? -Math.PI / 2 : 0;
+        let finalAngle = 0;
+        if (graphDirection === 'up') {
+          finalAngle = -Math.PI / 2;
+        } else if (graphDirection === 'down') {
+          finalAngle = Math.PI / 2;
+        } else if (graphDirection === 'left') {
+          finalAngle = Math.PI;
+        }
         ctx.beginPath();
         ctx.moveTo(x2, y2);
         ctx.lineTo(x2 - arrowSize * Math.cos(finalAngle - 0.4), y2 - arrowSize * Math.sin(finalAngle - 0.4));
@@ -1940,8 +2015,18 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         if (n.loading) {
           ctx.strokeStyle = accentColor;
           ctx.lineWidth = 2;
-          const cx = graphDirection === 'up' ? (n.x + n.w / 2) : (n.x + n.w + 10);
-          const cy = graphDirection === 'up' ? (n.y - 10) : (n.y + n.h / 2);
+          let cx = n.x + n.w + 10;
+          let cy = n.y + n.h / 2;
+          if (graphDirection === 'up') {
+            cx = n.x + n.w / 2;
+            cy = n.y - 10;
+          } else if (graphDirection === 'down') {
+            cx = n.x + n.w / 2;
+            cy = n.y + n.h + 10;
+          } else if (graphDirection === 'left') {
+            cx = n.x - 10;
+            cy = n.y + n.h / 2;
+          }
           const t = (Date.now() % 1000) / 1000 * Math.PI * 2;
           ctx.beginPath();
           ctx.arc(cx, cy, 5, t, t + Math.PI * 1.2);
@@ -2016,6 +2101,12 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           if (graphDirection === 'up') {
             tx = n.x + n.w / 2 - toggleSize / 2;
             ty = n.y - toggleGap - toggleSize;
+          } else if (graphDirection === 'down') {
+            tx = n.x + n.w / 2 - toggleSize / 2;
+            ty = n.y + n.h + toggleGap;
+          } else if (graphDirection === 'left') {
+            tx = n.x - toggleGap - toggleSize;
+            ty = n.y + n.h / 2 - toggleSize / 2;
           } else {
             tx = n.x + n.w + toggleGap;
             ty = n.y + n.h / 2 - toggleSize / 2;
@@ -2102,7 +2193,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         const n = gNodes[i];
         const r = n._toggleRect;
         const minX = r ? Math.min(n.x, r.x) : n.x;
-        const maxX = r ? Math.max(n.x + n.w, r.x + r.w) : (n.x + n.w + 14);
+        const maxX = r ? Math.max(n.x + n.w, r.x + r.w) : (n.x + n.w);
         const minY = r ? Math.min(n.y, r.y) : n.y;
         const maxY = r ? Math.max(n.y + n.h, r.y + r.h) : n.y + n.h;
         if (wx >= minX && wx <= maxX && wy >= minY && wy <= maxY) {

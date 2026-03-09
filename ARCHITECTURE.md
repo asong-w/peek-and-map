@@ -82,12 +82,13 @@ peek/
 
 ### `mapView.ts` — Map View 面板
 
-`MapViewProvider` 实现 `WebviewViewProvider`，提供符号引用关系分析，并支持树形列表、横向图形、纵向图形三种视图模式：
+`MapViewProvider` 实现 `WebviewViewProvider`，提供符号引用关系分析，并支持树形列表与图形两种视图模式（图形支持四个方向）：
 
 | 方法 | 说明 |
 |------|------|
 | `notifyEditorChange()` | 记录最后已知编辑器 |
 | `setPeekView(pv)` | 注入 `PeekViewProvider` 引用，用于单击节点时直接更新预览 |
+| `_saveViewState(mode, direction)` | 持久化视图模式与图形方向到 `workspaceState` |
 | `_doSearch()` | 按钮触发：分析光标所在符号的引用 |
 | `_resolveReferencingSymbols()` | 查找引用并定位其所在的封闭符号，构建引用树 |
 | `_expandRef()` | 展开引用节点，递归加载子引用 |
@@ -99,12 +100,12 @@ peek/
 
 | 函数 | 说明 |
 |------|------|
-| `setViewMode(mode)` | 在 `Outline`、`Horiz`、`Vert` 三种视图模式间切换（内部模式值分别为 `'tree'`、`'graph'`、`'graph-up'`） |
+| `setViewState(mode, direction)` | 在 `Outline` / `Graph` 间切换，并设置图形方向（`'up'` / `'down'` / `'left'` / `'right'`） |
 | `renderTreeList()` / `renderTreeNodeHtml()` | 渲染树形列表节点（SVG 箭头、类型徽章、名称、位置） |
 | `stripParams(name)` | 去除函数参数：`"foo(a, b)"` → `"foo"` |
 | `graphBuildFromData(d)` | 从搜索结果构建图形节点/边数据，根符号作为真实节点参与渲染，自动合并同符号的重复引用节点 |
 | `mergeItemsBySymbol(items)` | 将多个引用同一封闭符号的 TreeNodeData 合并为单个图形节点，收集所有调用位置（callSites） |
-| `graphLayout()` | BFS 层级布局 + 宽度/高度计算（多调用位置节点自动增高）+ 居中定位；`Horiz`/`Vert` 均使用父层顺序的稳定排序避免交叉渲染 |
+| `graphLayout()` | BFS 层级布局 + 宽度/高度计算（多调用位置节点自动增高）+ 居中定位；按方向支持 `up/down/left/right` 并保持稳定排序避免交叉渲染 |
 | `graphDraw()` | Canvas 2D 渲染：Bezier 曲线连边、箭头、圆角矩形节点（统一形状）、彩色字母徽章前缀（如 `f` Function、`m` Method、`C` Class 等，颜色继承自主题 `--peek-kind-*` CSS 变量）、标签；多调用位置节点额外渲染可点击的行号徽章（如 `L10` `L20` `L30`）；展开等待动画沿节点延伸方向显示 |
 | `graphHitTest(cx, cy)` | 鼠标坐标命中测试 |
 | `graphHitTestCallSite(node, cx, cy)` | 命中测试节点内的调用位置徽章，返回徽章索引 |
@@ -119,3 +120,4 @@ peek/
 | `expandRef` | 展开树/图节点 |
 | `jumpTo` | 双击：在编辑器中打开文件并定位（`preserveFocus: false`），同时通过 `peekLocation()` 更新 Peek View |
 | `peekOnly` | 单击：调用 `_peekView.peekLocation()` 直接更新 Peek View，不打开编辑器 |
+| `setViewState` | 保存当前 Map 视图状态（`mode` + `direction`） |
