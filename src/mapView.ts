@@ -1098,6 +1098,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     let gHoverCallSite = -1;  // index of hovered call-site badge (-1 = none)
     let gPendingExpand = null; // nodeId waiting for children
     let gAnimFrame = null;
+    let gLayoutAnimFrame = null;
+    let gCollapseAnimFrame = null;
 
     const G_NODE_H = 32;
     const G_CALL_ROW_H = 16;  // extra height per call-site badge row
@@ -1108,6 +1110,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     const G_LEVEL_GAP_Y = 56;
     const G_SIBLING_GAP_Y = 10;
     const G_SIBLING_GAP_X = 10;
+    const G_LAYOUT_ANIM_MS = 180;
+    const G_COLLAPSE_ANIM_MS = 160;
 
     /**
      * Merge tree-node items that refer to the same enclosing symbol into a
@@ -1144,6 +1148,14 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     }
 
     function graphBuildFromData(d) {
+      if (gCollapseAnimFrame) {
+        cancelAnimationFrame(gCollapseAnimFrame);
+        gCollapseAnimFrame = null;
+      }
+      if (gLayoutAnimFrame) {
+        cancelAnimationFrame(gLayoutAnimFrame);
+        gLayoutAnimFrame = null;
+      }
       gNodes = [];
       gEdges = [];
       gPan = {x: 0, y: 0};
@@ -1555,6 +1567,10 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       const prevPan = { x: gPan.x, y: gPan.y };
       const cw = graphContainer.clientWidth;
       const ch = graphContainer.clientHeight;
+      const prevNodeState = new Map();
+      for (const n of gNodes) {
+        prevNodeState.set(n.id, { x: n.x, y: n.y, w: n.w, h: n.h });
+      }
 
       let anchorScreen = null;
       if (anchorNodeId) {
@@ -1584,12 +1600,192 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           const ay = after.y + after.h / 2;
           gPan.x = anchorScreen.x - ax * gZoom;
           gPan.y = anchorScreen.y - ay * gZoom;
+          graphAnimateLayoutTransition(prevNodeState, prevPan, { x: gPan.x, y: gPan.y }, anchorNodeId, G_LAYOUT_ANIM_MS);
           return;
         }
       }
 
       gPan.x = cw / 2 - focusWorldX * gZoom;
       gPan.y = ch / 2 - focusWorldY * gZoom;
+      graphAnimateLayoutTransition(prevNodeState, prevPan, { x: gPan.x, y: gPan.y }, anchorNodeId, G_LAYOUT_ANIM_MS);
+    }
+
+    function graphAnimateLayoutTransition(prevNodeState, prevPan, targetPan, anchorNodeId, durationMs) {
+      if (gCollapseAnimFrame) {
+        cancelAnimationFrame(gCollapseAnimFrame);
+        gCollapseAnimFrame = null;
+      }
+      if (gLayoutAnimFrame) {
+        cancelAnimationFrame(gLayoutAnimFrame);
+        gLayoutAnimFrame = null;
+      }
+
+      const targetNodeState = new Map();
+      for (const n of gNodes) {
+        targetNodeState.set(n.id, { x: n.x, y: n.y, w: n.w, h: n.h });
+      }
+
+      const clearNodeAnimationOpacity = () => {
+        for (const n of gNodes) {
+          n._animOpacity = null;
+        }
+      };
+
+      const startNodeState = new Map();
+      const anchorStart = anchorNodeId ? prevNodeState.get(anchorNodeId) : undefined;
+      for (const n of gNodes) {
+        const from = prevNodeState.get(n.id)
+          ?? (n.parentId ? prevNodeState.get(n.parentId) : undefined)
+          ?? anchorStart
+          ?? targetNodeState.get(n.id);
+        startNodeState.set(n.id, from);
+
+        // Initialize node positions to start-state for smooth interpolation.
+        n.x = from.x;
+        n.y = from.y;
+        n.w = from.w;
+        n.h = from.h;
+      }
+
+      gPan.x = prevPan.x;
+      gPan.y = prevPan.y;
+
+      if (!durationMs || durationMs <= 0) {
+        for (const n of gNodes) {
+          const to = targetNodeState.get(n.id);
+          if (!to) continue;
+          n.x = to.x;
+          n.y = to.y;
+          n.w = to.w;
+          n.h = to.h;
+        }
+        clearNodeAnimationOpacity();
+        gPan.x = targetPan.x;
+        gPan.y = targetPan.y;
+        graphDraw();
+        return;
+      }
+
+      const startTime = performance.now();
+      const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+
+      const tick = (now) => {
+        const elapsed = now - startTime;
+        const t = Math.max(0, Math.min(1, elapsed / durationMs));
+        const e = easeOutCubic(t);
+
+        for (const n of gNodes) {
+          const from = startNodeState.get(n.id);
+          const to = targetNodeState.get(n.id);
+          if (!from || !to) continue;
+          n.x = from.x + (to.x - from.x) * e;
+          n.y = from.y + (to.y - from.y) * e;
+          n.w = from.w + (to.w - from.w) * e;
+          n.h = from.h + (to.h - from.h) * e;
+          n._animOpacity = prevNodeState.has(n.id) ? 1 : e;
+        }
+
+        gPan.x = prevPan.x + (targetPan.x - prevPan.x) * e;
+        gPan.y = prevPan.y + (targetPan.y - prevPan.y) * e;
+        graphDraw();
+
+        if (t < 1) {
+          gLayoutAnimFrame = requestAnimationFrame(tick);
+        } else {
+          clearNodeAnimationOpacity();
+          gLayoutAnimFrame = null;
+        }
+      };
+
+      gLayoutAnimFrame = requestAnimationFrame(tick);
+    }
+
+    function graphCollectDescendantIds(node) {
+      const nodeMap = {};
+      for (const n of gNodes) nodeMap[n.id] = n;
+      const toRemove = new Set();
+      const stack = [].concat(node.children);
+      while (stack.length > 0) {
+        const cid = stack.pop();
+        toRemove.add(cid);
+        const cn = nodeMap[cid];
+        if (cn) {
+          for (const gc of cn.children) stack.push(gc);
+        }
+      }
+      return toRemove;
+    }
+
+    function graphAnimateCollapse(node, onDone) {
+      if (!node) {
+        onDone();
+        return;
+      }
+
+      const toRemove = graphCollectDescendantIds(node);
+      if (toRemove.size === 0) {
+        onDone();
+        return;
+      }
+
+      if (gLayoutAnimFrame) {
+        cancelAnimationFrame(gLayoutAnimFrame);
+        gLayoutAnimFrame = null;
+      }
+      if (gCollapseAnimFrame) {
+        cancelAnimationFrame(gCollapseAnimFrame);
+        gCollapseAnimFrame = null;
+      }
+
+      const startState = new Map();
+      for (const n of gNodes) {
+        if (toRemove.has(n.id)) {
+          startState.set(n.id, { x: n.x, y: n.y, w: n.w, h: n.h });
+        }
+      }
+
+      const targetCx = node.x + node.w / 2;
+      const targetCy = node.y + node.h / 2;
+      const targetW = Math.max(8, node.w * 0.3);
+      const targetH = Math.max(8, node.h * 0.3);
+      const targetX = targetCx - targetW / 2;
+      const targetY = targetCy - targetH / 2;
+
+      const startTime = performance.now();
+      const easeInCubic = (t) => t * t * t;
+
+      const tick = (now) => {
+        const elapsed = now - startTime;
+        const t = Math.max(0, Math.min(1, elapsed / G_COLLAPSE_ANIM_MS));
+        const e = easeInCubic(t);
+
+        for (const n of gNodes) {
+          if (!toRemove.has(n.id)) continue;
+          const from = startState.get(n.id);
+          if (!from) continue;
+          n.x = from.x + (targetX - from.x) * e;
+          n.y = from.y + (targetY - from.y) * e;
+          n.w = from.w + (targetW - from.w) * e;
+          n.h = from.h + (targetH - from.h) * e;
+          n._animOpacity = 1 - e;
+        }
+
+        graphDraw();
+
+        if (t < 1) {
+          gCollapseAnimFrame = requestAnimationFrame(tick);
+        } else {
+          for (const n of gNodes) {
+            if (toRemove.has(n.id)) {
+              n._animOpacity = null;
+            }
+          }
+          gCollapseAnimFrame = null;
+          onDone();
+        }
+      };
+
+      gCollapseAnimFrame = requestAnimationFrame(tick);
     }
 
     /* Draw */
@@ -1618,12 +1814,19 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       const dimColor = ensureReadableColor(dimBase, nodeBg, fg, 2.2);
 
       // Draw edges
-      ctx.strokeStyle = colorToRgba(edgeColor, 0.8);
-      ctx.lineWidth = 1.2;
       for (const e of gEdges) {
         const from = nodeMap[e.from];
         const to = nodeMap[e.to];
         if (!from || !to) continue;
+        const fromOpacity = from._animOpacity != null ? Math.max(0, Math.min(1, from._animOpacity)) : 1;
+        const toOpacity = to._animOpacity != null ? Math.max(0, Math.min(1, to._animOpacity)) : 1;
+        const edgeOpacity = Math.min(fromOpacity, toOpacity);
+        if (edgeOpacity <= 0.01) { continue; }
+
+        ctx.save();
+        ctx.globalAlpha = edgeOpacity;
+        ctx.strokeStyle = colorToRgba(edgeColor, 0.8);
+        ctx.lineWidth = 1.2;
         let x1, y1, x2, y2, cp1x, cp1y, cp2x, cp2y;
         if (graphDirection === 'up') {
           x1 = from.x + from.w / 2;
@@ -1657,6 +1860,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         ctx.moveTo(x2, y2);
         ctx.lineTo(x2 - arrowSize * Math.cos(finalAngle + 0.4), y2 - arrowSize * Math.sin(finalAngle + 0.4));
         ctx.stroke();
+        ctx.restore();
       }
 
       // Draw nodes
@@ -1665,6 +1869,12 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       for (const n of gNodes) {
         const isHover = gHover === n.id;
         n._toggleRect = null;
+        const nodeOpacity = n._animOpacity != null ? Math.max(0, Math.min(1, n._animOpacity)) : 1;
+        if (nodeOpacity <= 0.01) {
+          continue;
+        }
+        ctx.save();
+        ctx.globalAlpha = nodeOpacity;
 
         // Node shape: all use rounded rectangle, kind distinguished by prefix icon
         const rawKindColor = nodeKindColor(n.kind) || funcColor;
@@ -1840,6 +2050,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
             }
           }
         }
+
+        ctx.restore();
       }
 
       ctx.restore();
@@ -2023,10 +2235,12 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
       if (graphHitTestToggle(hit, cx, cy)) {
         if (hit.expanded) {
-          graphRelayoutKeepView(hit.id, () => {
-            graphCollapse(hit);
+          graphAnimateCollapse(hit, () => {
+            graphRelayoutKeepView(hit.id, () => {
+              graphCollapse(hit);
+            });
+            graphDraw();
           });
-          graphDraw();
         } else {
           // Re-expand from cache if available
           if (nodeChildrenCache.has(hit.id)) {
