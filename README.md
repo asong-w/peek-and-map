@@ -22,7 +22,7 @@
 | **视图内跳转**  | 在面板中按住 Ctrl 并点击函数/类型/宏等符号，直接在 Peek 视图内跳转到该符号的定义，无需离开面板；          |
 | **前进/后退导航**      | Ctrl+点击跳转后可通过左上角按钮或鼠标侧键在历史记录中导航                        |
 | **快速缩放字体**    | 按住 Ctrl 并滚动鼠标滚轮可调整面板字体大小（8–40px），缩放时当前可见的第一行保持不变；设置会自动持久化   |
-| **符号类型标签**         | 顶栏符号左侧显示彩色字母徽章（如 `f` Function、`m` Method、`C` Class、`S` Struct…）和符号名称，颜色继承自当前 VS Code 主题      |
+| **符号类型图标**         | 顶栏符号左侧显示彩色 Emoji 图标（💿 Function、📀 Method、📱 Class、🔗 Interface、🔷 Variable、⭐ Constant、🟢 Property、🟠 Field、🏷️ Enum、📦 Module、📃 Namespace、💲 Struct、📲 Constructor、📄 File）和符号名称，无背景色，颜色继承自当前 VS Code 主题      |
 | **完全离线**             | Prism.js 从本地 `media/` 加载，无需网络         |
 
 ### Map View
@@ -34,7 +34,7 @@
 | **懒加载树展开**  | 树节点支持点击 SVG 箭头递归加载子引用，已展开节点可折叠/展开无需重新请求        |
 | **单击预览 / 双击跳转**    | 单击树节点在 Peek View 中预览定义（不打开编辑器）；双击树节点在编辑器中打开文件并定位，同时更新 Peek View     |
 | **双模式视图切换** | 使用 `Outline` / `Graph` 标签切换视图；`Graph` 模式支持方向选择（`Right` / `Left` / `Up` / `Down`） |
-| **图形视图（Graph）** | 图形视图以 BFS 树布局展示符号关系，Bezier 曲线连边；节点统一为圆角矩形，通过**符号名前的彩色字母徽章**（`f` Function、`m` Method、`C` Class、`I` Interface、`v` Variable、`c` Constant、`p` Property、`F` Field、`E` Enum、`M` Module、`N` Namespace、`S` Struct、`K` Ctor、`G` Global）区分对象类型，徽章与边框颜色一致 |
+| **图形视图（Graph）** | 图形视图以 BFS 树布局展示符号关系，Bezier 曲线连边；节点统一为圆角矩形，通过**符号名前的彩色 Emoji 图标**（💿 Function、📀 Method、📱 Class、🔗 Interface、🔷 Variable、⭐ Constant、🟢 Property、🟠 Field、🏷️ Enum、📦 Module、📃 Namespace、💲 Struct、📲 Constructor、📄 File、◎ Global）区分对象类型，图标与边框颜色一致，无背景底板 |
 | **图形视图节点合并**         | 当同一符号在多处引用目标符号时，图形视图中自动将重复的节点合并为一个，节点内部以行号徽章（如 `L10` `L20` `L30`）展示所有调用位置；单击/双击不同行号徽章分别触发预览/跳转到对应的调用位置，与树形视图中对应节点的行为一致 |
 | **图形视图交互**           | 单击节点在 Peek View 中预览（preserveFocus）、双击在编辑器中打开、点击节点侧边 `+/-` 按钮展开/折叠子节点、滚轮缩放、拖拽平移；等待动画显示在节点延伸方向（上/下/左/右） |
 | **视图状态持久化** | Map 视图会保存并恢复上次状态：`Outline/Graph` 模式以及 Graph 的方向设置（Right/Left/Up/Down） |

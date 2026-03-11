@@ -567,9 +567,8 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
       justify-content: center;
       width: 16px;
       height: 16px;
-      border-radius: 4px;
-      font-size: 10px;
-      font-weight: bold;
+      font-size: 11px;
+      font-weight: 600;
       font-family: var(--vscode-editor-font-family, monospace);
       flex-shrink: 0;
       line-height: 1;
@@ -776,31 +775,22 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     // ── Kind symbol / color helpers (mirrors mapView) ───────────────────────
     function kindSymbol(kind) {
       const map = {
-        'Function':    'f',
-        'Method':      'm',
-        'Class':       'C',
-        'Interface':   'I',
-        'Variable':    'v',
-        'Constant':    'c',
-        'Property':    'p',
-        'Field':       'F',
-        'Enum':        'E',
-        'Module':      'M',
-        'Namespace':   'N',
-        'Struct':      'S',
-        'Constructor': 'K',
-        'File':        '~',
+        'Function':    '💿',
+        'Method':      '📀',
+        'Class':       '📱',
+        'Interface':   '🔗',
+        'Variable':    '🔷',
+        'Constant':    '⭐',
+        'Property':    '🟢',
+        'Field':       '🟠',
+        'Enum':        '🏷️',
+        'Module':      '📦',
+        'Namespace':   '📃',
+        'Struct':      '💲',
+        'Constructor': '📲',
+        'File':        '📄',
       };
-      return map[kind] || '?';
-    }
-
-    function hexToRgba(hex, alpha) {
-      const h = hex.replace('#', '');
-      if (h.length < 6) { return hex; }
-      const r = parseInt(h.slice(0, 2), 16);
-      const g = parseInt(h.slice(2, 4), 16);
-      const b = parseInt(h.slice(4, 6), 16);
-      return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+      return map[kind] || '•';
     }
 
     function kindColor(kind) {
@@ -811,9 +801,8 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
 
     function applyKindColors(kind) {
       const color = kindColor(kind);
-      kindBadge.style.color           = color || 'var(--vscode-foreground, #ccc)';
-      kindBadge.style.backgroundColor = color ? hexToRgba(color, 0.18) : 'var(--vscode-badge-background, rgba(100,100,100,0.25))';
-      symbolNameEl.style.color        = '';
+      kindBadge.style.color    = color || 'var(--vscode-foreground, #ccc)';
+      symbolNameEl.style.color = '';
     }
 
     function splitQualifiedName(name) {
@@ -845,7 +834,6 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
         codeContainer.style.display = 'none';
         kindBadge.textContent            = '—';
         kindBadge.style.color           = '';
-        kindBadge.style.backgroundColor = '';
         symbolNameEl.textContent        = 'Peek View';
         symbolNameEl.style.color    = '';
         currentSymbolKind           = null;

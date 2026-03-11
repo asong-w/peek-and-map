@@ -106,7 +106,7 @@ peek/
 | `graphBuildFromData(d)` | 从搜索结果构建图形节点/边数据，根符号作为真实节点参与渲染，自动合并同符号的重复引用节点 |
 | `mergeItemsBySymbol(items)` | 将多个引用同一封闭符号的 TreeNodeData 合并为单个图形节点，收集所有调用位置（callSites） |
 | `graphLayout()` | BFS 层级布局 + 宽度/高度计算（多调用位置节点自动增高）+ 居中定位；按方向支持 `up/down/left/right` 并保持稳定排序避免交叉渲染 |
-| `graphDraw()` | Canvas 2D 渲染：Bezier 曲线连边、箭头、圆角矩形节点（统一形状）、彩色字母徽章前缀（如 `f` Function、`m` Method、`C` Class 等，颜色继承自主题 `--peek-kind-*` CSS 变量）、标签；多调用位置节点额外渲染可点击的行号徽章（如 `L10` `L20` `L30`）；展开等待动画沿节点延伸方向显示 |
+| `graphDraw()` | Canvas 2D 渲染：Bezier 曲线连边、箭头、圆角矩形节点（统一形状）、彩色 Emoji 图标前缀（💿 Function、📀 Method、📱 Class 等，无背景底板，颜色继承自主题 `--peek-kind-*` CSS 变量）、标签；多调用位置节点额外渲染可点击的行号徽章（如 `L10` `L20` `L30`）；展开等待动画沿节点延伸方向显示 |
 | `graphHitTest(cx, cy)` | 鼠标坐标命中测试 |
 | `graphHitTestCallSite(node, cx, cy)` | 命中测试节点内的调用位置徽章，返回徽章索引 |
 | `graphHandleChildren()` | 处理扩展后返回的子节点，更新图形 |
