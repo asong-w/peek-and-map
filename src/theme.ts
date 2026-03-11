@@ -35,6 +35,115 @@ function parseJsonc(text: string): any {
   return JSON.parse(stripJsonComments(text).replace(/,\s*([}\]])/g, '$1'));
 }
 
+function fallbackPrismTokenColors(): Record<string, string> {
+  const kind = vscode.window.activeColorTheme.kind;
+  if (kind === vscode.ColorThemeKind.Light) {
+    return {
+      comment: '#6a737d',
+      string: '#032f62',
+      keyword: '#d73a49',
+      function: '#6f42c1',
+      className: '#6f42c1',
+      number: '#005cc5',
+      boolean: '#005cc5',
+      operator: '#d73a49',
+      property: '#005cc5',
+      variable: '#24292e',
+      punctuation: '#586069',
+    };
+  }
+  if (kind === vscode.ColorThemeKind.HighContrast || kind === vscode.ColorThemeKind.HighContrastLight) {
+    return {
+      comment: '#7ca668',
+      string: '#ce9178',
+      keyword: '#569cd6',
+      function: '#dcdcaa',
+      className: '#4ec9b0',
+      number: '#b5cea8',
+      boolean: '#569cd6',
+      operator: '#d4d4d4',
+      property: '#9cdcfe',
+      variable: '#d4d4d4',
+      punctuation: '#d4d4d4',
+    };
+  }
+  return {
+    comment: '#6a9955',
+    string: '#ce9178',
+    keyword: '#569cd6',
+    function: '#dcdcaa',
+    className: '#4ec9b0',
+    number: '#b5cea8',
+    boolean: '#569cd6',
+    operator: '#d4d4d4',
+    property: '#9cdcfe',
+    variable: '#d4d4d4',
+    punctuation: '#d4d4d4',
+  };
+}
+
+function fallbackSymbolKindColors(): Record<string, string> {
+  const kind = vscode.window.activeColorTheme.kind;
+  if (kind === vscode.ColorThemeKind.Light) {
+    return {
+      Function: '#6f42c1',
+      Method: '#6f42c1',
+      Constructor: '#6f42c1',
+      Class: '#005cc5',
+      Interface: '#005cc5',
+      Struct: '#005cc5',
+      Enum: '#d73a49',
+      Variable: '#24292e',
+      Constant: '#005cc5',
+      Property: '#005cc5',
+      Field: '#005cc5',
+      Module: '#24292e',
+      Namespace: '#24292e',
+      File: '#586069',
+      owner: '#005cc5',
+      operator: '#24292e',
+    };
+  }
+  if (kind === vscode.ColorThemeKind.HighContrast || kind === vscode.ColorThemeKind.HighContrastLight) {
+    return {
+      Function: '#dcdcaa',
+      Method: '#dcdcaa',
+      Constructor: '#dcdcaa',
+      Class: '#4ec9b0',
+      Interface: '#4ec9b0',
+      Struct: '#4ec9b0',
+      Enum: '#c586c0',
+      Variable: '#d4d4d4',
+      Constant: '#9cdcfe',
+      Property: '#9cdcfe',
+      Field: '#9cdcfe',
+      Module: '#4ec9b0',
+      Namespace: '#4ec9b0',
+      File: '#d4d4d4',
+      owner: '#4ec9b0',
+      operator: '#d4d4d4',
+    };
+  }
+  return {
+    Function: '#dcdcaa',
+    Method: '#dcdcaa',
+    Constructor: '#dcdcaa',
+    Class: '#4ec9b0',
+    Interface: '#4ec9b0',
+    Struct: '#4ec9b0',
+    Enum: '#c586c0',
+    Variable: '#9cdcfe',
+    Constant: '#4fc1ff',
+    Property: '#9cdcfe',
+    Field: '#9cdcfe',
+    Module: '#4ec9b0',
+    Namespace: '#4ec9b0',
+    File: '#d4d4d4',
+    owner: '#4ec9b0',
+    operator: '#d4d4d4',
+  };
+}
+
 /** Recursively load tokenColors from a theme file and its `include` ancestors. */
 function loadThemeTokenColors(filePath: string): TokenColorRule[] {
   try {
@@ -53,7 +162,7 @@ function loadThemeTokenColors(filePath: string): TokenColorRule[] {
 }
 
 /** Resolve the active color theme's tokenColor rules by finding its extension. */
-function resolveActiveThemeTokenColors(): TokenColorRule[] {
+function (): TokenColorRule[] {
   const themeId = vscode.workspace.getConfiguration('workbench').get<string>('colorTheme');
   if (!themeId) { return []; }
   for (const ext of vscode.extensions.all) {
@@ -119,7 +228,18 @@ const SYMBOL_KIND_TO_TM: Record<string, string[]> = {
  */
 export function generateSymbolKindCss(): string {
   const rules = resolveActiveThemeTokenColors();
-  if (rules.length === 0) { return ''; }
+  if (rules.length === 0) {
+    const fallback = fallbackSymbolKindColors();
+    let vars = ':root {\n';
+    for (const [kind, color] of Object.entries(fallback)) {
+      if (kind === 'owner' || kind === 'operator') { continue; }
+      vars += `  --peek-kind-${kind}: ${color};\n`;
+    }
+    vars += `  --peek-qualified-owner: ${fallback.owner};\n`;
+    vars += `  --peek-operator: ${fallback.operator};\n`;
+    vars += '}\n';
+    return vars;
+  }
   let vars = ':root {\n';
   for (const [kind, scopes] of Object.entries(SYMBOL_KIND_TO_TM)) {
     const setting = findBestSetting(scopes, rules);
@@ -156,10 +276,48 @@ export function generateSymbolKindCss(): string {
 /** Generate CSS for all Prism token classes from the current VS Code theme. */
 export function generateThemeTokenCss(): string {
   const rules = resolveActiveThemeTokenColors();
-  if (rules.length === 0) { return ''; }
+  if (rules.length === 0) {
+    const fallback = fallbackPrismTokenColors();
+    let css = '';
+    const map: Record<string, string> = {
+      comment: fallback.comment,
+      prolog: fallback.comment,
+      doctype: fallback.comment,
+      cdata: fallback.comment,
+      punctuation: fallback.punctuation,
+      property: fallback.property,
+      tag: fallback.keyword,
+      boolean: fallback.boolean,
+      number: fallback.number,
+      constant: fallback.number,
+      symbol: fallback.number,
+      selector: fallback.className,
+      attrName: fallback.property,
+      string: fallback.string,
+      char: fallback.string,
+      builtin: fallback.className,
+      inserted: fallback.string,
+      operator: fallback.operator,
+      entity: fallback.operator,
+      url: fallback.string,
+      atrule: fallback.keyword,
+      attrValue: fallback.string,
+      keyword: fallback.keyword,
+      function: fallback.function,
+      className: fallback.className,
+      regex: fallback.string,
+      important: fallback.keyword,
+      variable: fallback.variable,
+      deleted: '#f14c4c',
+    };
+    for (const [token, color] of Object.entries(map)) {
+      css += `.token.${token} { color: ${color}; }\n`;
+    }
+    return css;
+  }
   let css = '';
   for (const [prismToken, tmScopes] of Object.entries(PRISM_TO_TEXTMATE)) {
-    const setting = findBestSetting(tmScopes, rules);
+    const setting = findBestSetting(tmScopes, rules);resolveActiveThemeTokenColors
     if (setting?.foreground) {
       css += `.token.${prismToken} { color: ${setting.foreground};`;
       if (setting.fontStyle) {
