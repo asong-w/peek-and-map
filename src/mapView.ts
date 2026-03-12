@@ -14,7 +14,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
   private _lastKnownEditor?: vscode.TextEditor;
 
   // Node maps for lazy tree expansion
-  private _refNodeMap = new Map<string, { uri: vscode.Uri; position: vscode.Position }>();
+  private _refNodeMap = new Map<string, { uri: vscode.Uri; position: vscode.Position; pathSymbolKeys: string[] }>();
   private _nodeCounter = 0;
   private _peekView?: PeekViewProvider;
   private _viewMode: 'tree' | 'graph';
@@ -160,9 +160,17 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
   // ── Node ID allocation ─────────────────────────────────────────────────────
 
-  private _allocRefNodeId(uri: vscode.Uri, position: vscode.Position): string {
+  private _symbolPositionKey(uri: vscode.Uri, position: vscode.Position): string {
+    return `${uri.toString()}#sym:${position.line}:${position.character}`;
+  }
+
+  private _allocRefNodeId(uri: vscode.Uri, position: vscode.Position, pathSymbolKeys: Set<string>): string {
     const id = `r${++this._nodeCounter}`;
-    this._refNodeMap.set(id, { uri, position });
+    this._refNodeMap.set(id, {
+      uri,
+      position,
+      pathSymbolKeys: [...pathSymbolKeys],
+    });
     return id;
   }
 
@@ -202,6 +210,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     // Resolve current symbol + optional owning class for root label/kind
     let rootKind = '';
     let rootLabel = word;
+    let rootIsDeclaration = false;
     let containerMismatch = false;
     try {
       const symbols = await this._getDocumentSymbols(doc.uri);
@@ -212,6 +221,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           this._inferCppOwnerClass(found.symbol.name, doc.lineAt(found.symbol.selectionRange.start.line).text, doc.languageId);
         rootKind = this._symbolKindNameWithOwner(found.symbol.kind, found.symbol.name, ownerClass, doc.languageId);
         rootLabel = this._formatLabelWithOwner(found.symbol.name, ownerClass, found.symbol.kind);
+        rootIsDeclaration = this._isFunctionDeclarationSymbol(found.symbol, doc);
       } else if (found) {
         containerMismatch = true;
       }
@@ -251,6 +261,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           callCharacter: queryPos.character,
           uri: doc.uri.toString(),
           kind: rootKind || 'Symbol',
+          isDeclaration: rootIsDeclaration,
           preview: doc.lineAt(queryPos.line).text.trim(),
         },
         symbolName: word,
@@ -272,7 +283,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
   private async _resolveReferencingSymbols(
     uri: vscode.Uri,
     pos: vscode.Position,
-    wsRoot: string
+    wsRoot: string,
+    ancestorPathSymbolKeys: Set<string> = new Set<string>()
   ): Promise<TreeNodeData[]> {
     let locs: vscode.Location[] | undefined;
     try {
@@ -281,6 +293,34 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       );
     } catch { /* no reference provider */ }
     if (!locs || locs.length === 0) { return []; }
+
+    const targetSymbols = await this._getDocumentSymbols(uri);
+    const targetSymbol = this._deepestContaining(targetSymbols, pos);
+    const targetSymStart = targetSymbol?.selectionRange.start;
+    let targetDoc: vscode.TextDocument | undefined;
+    try {
+      targetDoc = await vscode.workspace.openTextDocument(uri);
+    } catch {
+      targetDoc = undefined;
+    }
+    const targetIsDeclaration = !!(targetSymbol && targetDoc && this._isFunctionDeclarationSymbol(targetSymbol, targetDoc));
+    const targetWithAncestors = targetSymStart
+      ? this._findBySelectionStartWithAncestors(targetSymbols, targetSymStart)
+      : undefined;
+    const targetOwnerClass = targetWithAncestors && targetSymbol && targetDoc
+      ? (
+        this._nearestOwnerClassName(targetWithAncestors.ancestors)
+        ?? this._inferCppOwnerClass(
+          targetSymbol.name,
+          targetDoc.lineAt(targetSymStart!.line).text,
+          targetDoc.languageId
+        )
+      )
+      : undefined;
+    const targetSimpleName = targetSymbol ? this._simpleSymbolName(targetSymbol.name) : '';
+    const targetKey = this._symbolPositionKey(uri, targetSymStart ?? pos);
+    const pathSymbolKeys = new Set<string>(ancestorPathSymbolKeys);
+    pathSymbolKeys.add(targetKey);
 
     const result: TreeNodeData[] = [];
     // Tracks which enclosing symbols have already received an expandable nodeId
@@ -316,20 +356,14 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       const symStart = enclosing.selectionRange.start;
       if (
         loc.uri.toString() === uri.toString() &&
-        symStart.line === pos.line &&
-        symStart.character === pos.character
+        targetSymStart &&
+        symStart.line === targetSymStart.line &&
+        symStart.character === targetSymStart.character
       ) {
         continue;
       }
 
-      // First occurrence of this enclosing symbol → expandable; subsequent → leaf
-      const symKey = loc.uri.toString() + '#sym:' + symStart.line + ':' + symStart.character;
-      const isFirst = !firstSeenKeys.has(symKey);
-      if (isFirst) { firstSeenKeys.add(symKey); }
-
-      const nodeId = isFirst
-        ? this._allocRefNodeId(loc.uri, symStart)
-        : `leaf_${++this._nodeCounter}`;
+      const isDeclaration = this._isFunctionDeclarationSymbol(enclosing, refDoc);
 
       const found =
         this._findBySelectionStartWithAncestors(symbols, symStart) ??
@@ -341,6 +375,29 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         )
         : this._inferCppOwnerClass(enclosing.name, refDoc.lineAt(symStart.line).text, refDoc.languageId);
 
+      // Declaration symbol should not be considered as "referenced by its own definition".
+      if (
+        targetIsDeclaration &&
+        !isDeclaration &&
+        this._isFunctionLikeSymbol(enclosing.kind) &&
+        this._simpleSymbolName(enclosing.name) === targetSimpleName &&
+        ((ownerClass ?? '') === (targetOwnerClass ?? ''))
+      ) {
+        continue;
+      }
+
+      // First occurrence of this enclosing symbol → expandable; subsequent → leaf
+      const symKey = loc.uri.toString() + '#sym:' + symStart.line + ':' + symStart.character;
+      if (pathSymbolKeys.has(symKey)) {
+        continue;
+      }
+      const isFirst = !firstSeenKeys.has(symKey);
+      if (isFirst) { firstSeenKeys.add(symKey); }
+
+      const nodeId = isFirst
+        ? this._allocRefNodeId(loc.uri, symStart, new Set<string>([...pathSymbolKeys, symKey]))
+        : `leaf_${++this._nodeCounter}`;
+
       result.push({
         nodeId,
         label: this._formatLabelWithOwner(enclosing.name, ownerClass, enclosing.kind),
@@ -351,6 +408,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         callCharacter: loc.range.start.character,
         uri: loc.uri.toString(),
         kind: this._symbolKindNameWithOwner(enclosing.kind, enclosing.name, ownerClass, refDoc.languageId),
+        isDeclaration,
         preview: refDoc.lineAt(symStart.line).text.trim(),
       });
     }
@@ -368,7 +426,12 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
-    const children = await this._resolveReferencingSymbols(info.uri, info.position, wsRoot);
+    const children = await this._resolveReferencingSymbols(
+      info.uri,
+      info.position,
+      wsRoot,
+      new Set<string>(info.pathSymbolKeys)
+    );
     this._view.webview.postMessage({ type: 'children', parentNodeId: nodeId, items: children });
   }
 
@@ -489,6 +552,33 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     const simple = this._simpleSymbolName(symbolName).trim();
     if (simple === w || simple === `~${w}`) { return true; }
     if (simple.startsWith(w + '<')) { return true; }
+    return false;
+  }
+
+  private _isFunctionLikeSymbol(kind: vscode.SymbolKind): boolean {
+    return kind === vscode.SymbolKind.Function
+      || kind === vscode.SymbolKind.Method
+      || kind === vscode.SymbolKind.Constructor;
+  }
+
+  private _isFunctionDeclarationSymbol(symbol: vscode.DocumentSymbol, doc: vscode.TextDocument): boolean {
+    if (!this._isFunctionLikeSymbol(symbol.kind)) {
+      return false;
+    }
+
+    const lineText = doc.lineAt(symbol.selectionRange.start.line).text;
+    const tail = lineText.slice(symbol.selectionRange.start.character);
+    if (!/\{/.test(tail) && /;\s*(?:\/\/.*)?$/.test(tail)) {
+      return true;
+    }
+
+    if (symbol.range.start.line === symbol.range.end.line) {
+      const rangeText = doc.getText(symbol.range).trim();
+      if (!/\{/.test(rangeText) && /;\s*(?:\/\/.*)?$/.test(rangeText)) {
+        return true;
+      }
+    }
+
     return false;
   }
 
@@ -1173,6 +1263,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
                 id: nid,
                 label: item.label,
                 kind: item.kind || '',
+                isDeclaration: !!item.isDeclaration,
+                noChildren: false,
                 x: 0, y: 0, w: 0, h: G_NODE_H,
                 children: [],
                 expanded: false,
@@ -1274,7 +1366,9 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     const G_NODE_H = 24;
     const G_CALL_ROW_H = 14;  // extra height per call-site badge row
     const G_CALLS_PER_ROW = 5;
-    const G_PAD_X = 8;
+    const G_NODE_PAD_L = 6;
+    const G_NODE_PAD_R = 8;
+    const G_DECL_RIGHT_EXTRA = 6;
     const G_PAD_Y = 3;
     const G_KIND_BADGE_W = 12;
     const G_KIND_BADGE_GAP = 3;
@@ -1343,6 +1437,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         id: rootId,
         label: d.rootNode?.label || d.symbolName,
         kind: d.rootNode?.kind || 'Function',
+        isDeclaration: !!d.rootNode?.isDeclaration,
+        noChildren: false,
         x: 0, y: 0, w: 0, h: G_NODE_H,
         children: [],
         expanded: true,
@@ -1363,6 +1459,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           id: nid,
           label: item.label,
           kind: item.kind || '',
+          isDeclaration: !!item.isDeclaration,
+          noChildren: false,
           x: 0, y: 0, w: 0, h: G_NODE_H,
           children: [],
           expanded: false,
@@ -1411,6 +1509,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
     function graphNodeCanToggle(node) {
       if (!node) return false;
+      if (node.noChildren) return false;
       if (!node.data || !node.data.nodeId) return true;
       return !String(node.data.nodeId).startsWith('leaf_');
     }
@@ -1418,6 +1517,11 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     /* Return symbol for a kind (used in tree view) */
     function kindSymbol(kind) {
       return nodeKindIcon(kind);
+    }
+
+    function isDeclarationNode(node) {
+      if (!node || !node.isDeclaration) return false;
+      return node.kind === 'Function' || node.kind === 'Method' || node.kind === 'Constructor';
     }
 
     /* Parse common CSS color formats into numeric RGBA */
@@ -1549,7 +1653,10 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         const isRootNode = n.id === '__root__';
         const displayLabel = stripParams(n.label);
         const labelW = gTextWidth(displayLabel, isRootNode ? ('bold ' + font) : font);
-        let baseW = G_PAD_X * 2 + G_KIND_BADGE_W + G_KIND_BADGE_GAP + labelW;
+        let baseW = G_NODE_PAD_L + G_NODE_PAD_R + G_KIND_BADGE_W + G_KIND_BADGE_GAP + labelW;
+        if (isDeclarationNode(n)) {
+          baseW += G_DECL_RIGHT_EXTRA;
+        }
 
         // Multi-callsite: compute badge row width
         const cs = n.callSites;
@@ -1557,12 +1664,12 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           let maxBadgesRowW = 0;
           for (let rowStart = 0; rowStart < cs.length; rowStart += G_CALLS_PER_ROW) {
             const rowEnd = Math.min(cs.length, rowStart + G_CALLS_PER_ROW);
-            let rowW = G_PAD_X; // left padding
+            let rowW = G_NODE_PAD_L; // left padding
             for (let si = rowStart; si < rowEnd; si++) {
               const txt = 'L' + (cs[si].callLine + 1);
               rowW += gTextWidth(txt, callFont) + G_CALL_BADGE_PAD_X + G_CALL_BADGE_GAP;
             }
-            rowW += G_PAD_X - G_CALL_BADGE_GAP;
+            rowW += G_NODE_PAD_R - G_CALL_BADGE_GAP;
             if (rowW > maxBadgesRowW) { maxBadgesRowW = rowW; }
           }
           if (maxBadgesRowW > baseW) { baseW = maxBadgesRowW; }
@@ -1710,7 +1817,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           let yStart = (ch / 2) - (totalH / 2);
           let yCur = yStart;
           for (let i = 0; i < group.length; i++) {
-            group[i].x = xOffset;
+            group[i].x = graphDirection === 'left' ? (xOffset - group[i].w) : xOffset;
             group[i].y = yCur;
             yCur += group[i].h + G_SIBLING_GAP_Y;
           }
@@ -2026,7 +2133,6 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           cp1x = cpx; cp1y = y1;
           cp2x = cpx; cp2y = y2;
         }
-
         ctx.beginPath();
         ctx.moveTo(x1, y1);
         ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x2, y2);
@@ -2064,7 +2170,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         ctx.save();
         ctx.globalAlpha = nodeOpacity;
 
-        // Node shape: all use rounded rectangle, kind distinguished by prefix icon
+        // Node shape: function declaration nodes use right trapezoid; others use rounded rectangle
         const rawKindColor = nodeKindColor(n.kind) || funcColor;
         const kindBorderColor = ensureReadableColor(rawKindColor, nodeBg, fg, 2.4);
         const nodeFill = isHover ? hoverBg : nodeBg;
@@ -2072,17 +2178,32 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         ctx.strokeStyle = isHover ? ensureReadableColor(accentColor, nodeFill, fg, 2.4) : kindBorderColor;
         ctx.lineWidth = isHover ? 1.35 : 1;
         const ncx = n.x + n.w / 2, ncy = n.y + n.h / 2;
-        const r = 4;
         ctx.beginPath();
-        ctx.moveTo(n.x + r, n.y);
-        ctx.lineTo(n.x + n.w - r, n.y);
-        ctx.quadraticCurveTo(n.x + n.w, n.y, n.x + n.w, n.y + r);
-        ctx.lineTo(n.x + n.w, n.y + n.h - r);
-        ctx.quadraticCurveTo(n.x + n.w, n.y + n.h, n.x + n.w - r, n.y + n.h);
-        ctx.lineTo(n.x + r, n.y + n.h);
-        ctx.quadraticCurveTo(n.x, n.y + n.h, n.x, n.y + n.h - r);
-        ctx.lineTo(n.x, n.y + r);
-        ctx.quadraticCurveTo(n.x, n.y, n.x + r, n.y);
+        if (isDeclarationNode(n)) {
+          const slant = Math.max(8, Math.min(14, n.w * 0.14));
+          if (graphDirection === 'left') {
+            ctx.moveTo(n.x + slant, n.y);
+            ctx.lineTo(n.x + n.w, n.y);
+            ctx.lineTo(n.x + n.w, n.y + n.h);
+            ctx.lineTo(n.x, n.y + n.h);
+          } else {
+            ctx.moveTo(n.x, n.y);
+            ctx.lineTo(n.x + n.w - slant, n.y);
+            ctx.lineTo(n.x + n.w, n.y + n.h);
+            ctx.lineTo(n.x, n.y + n.h);
+          }
+        } else {
+          const r = 4;
+          ctx.moveTo(n.x + r, n.y);
+          ctx.lineTo(n.x + n.w - r, n.y);
+          ctx.quadraticCurveTo(n.x + n.w, n.y, n.x + n.w, n.y + r);
+          ctx.lineTo(n.x + n.w, n.y + n.h - r);
+          ctx.quadraticCurveTo(n.x + n.w, n.y + n.h, n.x + n.w - r, n.y + n.h);
+          ctx.lineTo(n.x + r, n.y + n.h);
+          ctx.quadraticCurveTo(n.x, n.y + n.h, n.x, n.y + n.h - r);
+          ctx.lineTo(n.x, n.y + r);
+          ctx.quadraticCurveTo(n.x, n.y, n.x + r, n.y);
+        }
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
@@ -2112,7 +2233,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           }
         }
 
-        // Kind badge + label (centered, single row)
+        // Kind badge + label (single row; mirrored alignment in left direction)
         const hasMultiCS = n.callSites && n.callSites.length > 1;
         const labelY = hasMultiCS ? (n.y + G_NODE_H / 2) : ncy;
         const letter    = nodeKindIcon(n.kind);
@@ -2130,8 +2251,10 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         const sepW = sepText ? gTextWidth(sepText, drawFont) : 0;
         const memberW = gTextWidth(memberText, drawFont);
         const textW = ownerW + sepW + memberW;
-        const totalW    = badgeW + badgeGap + textW;
-        const startX    = ncx - totalW / 2;
+        const totalContentW = badgeW + badgeGap + textW;
+        const startX = graphDirection === 'left'
+          ? (n.x + n.w - G_NODE_PAD_R - totalContentW)
+          : (n.x + G_NODE_PAD_L);
 
         // Badge symbol
         ctx.font = '600 9px ' + getComputedStyle(document.body).fontFamily;
@@ -2162,7 +2285,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         ctx.fillText(memberText, textX, labelY);
 
         // Expand/collapse toggle icon (on node extension side)
-        if (graphNodeCanToggle(n)) {
+        if (graphNodeCanToggle(n) || n.noChildren) {
           const toggleSize = 12;
           const toggleGap = 4;
           let tx;
@@ -2180,31 +2303,43 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
             tx = n.x + n.w + toggleGap;
             ty = n.y + n.h / 2 - toggleSize / 2;
           }
-          n._toggleRect = { x: tx, y: ty, w: toggleSize, h: toggleSize };
+          const isInteractiveToggle = graphNodeCanToggle(n);
+          n._toggleRect = isInteractiveToggle ? { x: tx, y: ty, w: toggleSize, h: toggleSize } : null;
 
-          const toggleHover = (gHover === n.id && gHoverCallSite === -2);
-          ctx.fillStyle = toggleHover ? colorToRgba(accentColor, 0.28) : colorToRgba(dimColor, 0.16);
-          ctx.strokeStyle = toggleHover ? ensureReadableColor(accentColor, nodeFill, fg, 2.2) : colorToRgba(dimColor, 0.75);
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.roundRect(tx, ty, toggleSize, toggleSize, 3);
-          ctx.fill();
-          ctx.stroke();
-
+          const toggleHover = (gHover === n.id && gHoverCallSite === -2 && isInteractiveToggle);
           const cx = tx + toggleSize / 2;
           const cy = ty + toggleSize / 2;
-          ctx.strokeStyle = toggleHover
-            ? ensureReadableColor(accentColor, nodeFill, fg, 3.0)
-            : ensureReadableColor(dimColor, nodeFill, fg, 3.0);
-          ctx.lineWidth = 1.6;
-          ctx.beginPath();
-          ctx.moveTo(cx - 3, cy);
-          ctx.lineTo(cx + 3, cy);
-          if (!n.expanded) {
-            ctx.moveTo(cx, cy - 3);
-            ctx.lineTo(cx, cy + 3);
+
+          if (n.noChildren) {
+            ctx.fillStyle = colorToRgba(dimColor, 0.10);
+            ctx.strokeStyle = colorToRgba(dimColor, 0.85);
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 4.2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          } else {
+            ctx.fillStyle = toggleHover ? colorToRgba(accentColor, 0.28) : colorToRgba(dimColor, 0.16);
+            ctx.strokeStyle = toggleHover ? ensureReadableColor(accentColor, nodeFill, fg, 2.2) : colorToRgba(dimColor, 0.75);
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.roundRect(tx, ty, toggleSize, toggleSize, 3);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.strokeStyle = toggleHover
+              ? ensureReadableColor(accentColor, nodeFill, fg, 3.0)
+              : ensureReadableColor(dimColor, nodeFill, fg, 3.0);
+            ctx.lineWidth = 1.6;
+            ctx.beginPath();
+            ctx.moveTo(cx - 3, cy);
+            ctx.lineTo(cx + 3, cy);
+            if (!n.expanded) {
+              ctx.moveTo(cx, cy - 3);
+              ctx.lineTo(cx, cy + 3);
+            }
+            ctx.stroke();
           }
-          ctx.stroke();
         }
 
         // ── Call-site line-number badges (only for merged nodes) ──────────
@@ -2216,7 +2351,9 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           const badgeRowY = n.y + G_NODE_H;
           for (let rowStart = 0; rowStart < cs.length; rowStart += G_CALLS_PER_ROW) {
             const rowEnd = Math.min(cs.length, rowStart + G_CALLS_PER_ROW);
-            let bx = n.x + G_PAD_X;
+            let bx = graphDirection === 'left'
+              ? (n.x + n.w - G_NODE_PAD_R)
+              : (n.x + G_NODE_PAD_L);
             for (let si = rowStart; si < rowEnd; si++) {
               const txt = 'L' + (cs[si].callLine + 1);
               const tw = ctx.measureText(txt).width;
@@ -2230,8 +2367,9 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
               // Badge background
               ctx.fillStyle = isHot ? colorToRgba(accentColor, 0.35) : colorToRgba(dimColor, 0.18);
+              const badgeX = graphDirection === 'left' ? (bx - bw) : bx;
               ctx.beginPath();
-              ctx.roundRect(bx, by, bw, bh, 2);
+              ctx.roundRect(badgeX, by, bw, bh, 2);
               ctx.fill();
 
               // Badge text
@@ -2240,10 +2378,16 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
                 : ensureReadableColor(dimColor, nodeFill, fg, 3.0);
               ctx.textAlign = 'center';
               ctx.textBaseline = 'middle';
-              ctx.fillText(txt, bx + bw / 2, by + bh / 2);
-
-              n._callBadgeRects.push({ x: bx, y: by, w: bw, h: bh, idx: si });
-              bx += bw + G_CALL_BADGE_GAP;
+              if (graphDirection === 'left') {
+                const drawX = badgeX;
+                ctx.fillText(txt, drawX + bw / 2, by + bh / 2);
+                n._callBadgeRects.push({ x: drawX, y: by, w: bw, h: bh, idx: si });
+                bx = drawX - G_CALL_BADGE_GAP;
+              } else {
+                ctx.fillText(txt, bx + bw / 2, by + bh / 2);
+                n._callBadgeRects.push({ x: bx, y: by, w: bw, h: bh, idx: si });
+                bx += bw + G_CALL_BADGE_GAP;
+              }
             }
           }
         }
@@ -2304,12 +2448,14 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
       if (items.length === 0) {
         parent.expanded = false;
+        parent.noChildren = true;
         graphDraw();
         return;
       }
 
       graphRelayoutKeepView(parentNodeId, () => {
         parent.expanded = true;
+        parent.noChildren = false;
         const merged = mergeItemsBySymbol(items);
         for (const mg of merged) {
           const item = mg.primary;
@@ -2319,6 +2465,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
             id: nid,
             label: item.label,
             kind: item.kind || '',
+            isDeclaration: !!item.isDeclaration,
+            noChildren: false,
             x: 0, y: 0, w: 0, h: G_NODE_H,
             children: [],
             expanded: false,
@@ -2451,7 +2599,9 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           if (nodeChildrenCache.has(hit.id)) {
             const cached = nodeChildrenCache.get(hit.id);
             graphHandleChildren(hit.id, cached);
-            expandedNodeIds.add(hit.id);
+            if (cached && cached.length > 0) {
+              expandedNodeIds.add(hit.id);
+            }
             loadedNodes.add(hit.id);
             return;
           }

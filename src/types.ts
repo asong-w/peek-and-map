@@ -22,6 +22,7 @@ export interface TreeNodeData {
   callCharacter: number;  // character where the reference/call actually occurs
   uri: string;
   kind?: string;
+  isDeclaration?: boolean;
   preview: string;
 }
 
