@@ -4,7 +4,7 @@
 
 - **Peek View**：实时展示光标处符号的定义体，跟随编辑器语法高亮、支持视图内跳转、前进后退导航和快速字体调整。
 - **Map View**：分析光标处符号的引用关系，支持 `Outline` / `Graph` 两种视图；`Graph` 支持上下左右四个生长方向，支持递归展开和跳转。
-- **Symbol Search**：在工作区内按关键字搜索符号，输入时实时刷新结果列表；默认单击仅更新 Peek，双击跳转到定义位置（单击行为可配置）。
+- **Symbol Search**：在工作区内按关键字搜索符号（支持空格分隔多关键字 AND 匹配），输入时实时刷新结果列表；默认单击仅更新 Peek，双击跳转到定义位置（单击行为可配置）。
 
 ---
 
@@ -24,7 +24,7 @@
 | **视图内跳转** | 在视图中按住 Ctrl 并点击函数/类型/宏等符号，直接在 Peek 视图内跳转到该符号的定义，无需离开视图。 |
 | **前进/后退导航** | Ctrl+点击跳转后可通过**视图内**左上角按钮或鼠标侧键在历史记录中切换。 |
 | **快速缩放字体** | 按住 Ctrl 并滚动鼠标滚轮可调整视图字体大小（8–40px），缩放时当前可见的第一行保持不变；设置会自动持久化。 |
-| **符号类型图标** | 顶栏符号左侧显示彩色 Emoji 图标（💿 Function、📀 Method、📱 Class、🔗 Interface、🔷 Variable、⭐ Constant、🟢 Property、🟠 Field、🏷️ Enum、📦 Module、📃 Namespace、💲 Struct、📲 Constructor、📄 File）和符号名称，颜色继承自当前 VS Code 主题。 |
+| **符号类型图标** | 顶栏符号左侧显示彩色 Emoji 图标（按字母序：🗂️ Array、⚖️ Boolean、📱 Class、⭐ Constant、📲 Constructor、🏷️ Enum、🔖 EnumMember、🎯 Event、🟠 Field、📄 File、💿 Function、🔵 Global、🔗 Interface、🗝️ Key、📀 Method、📦 Module、📃 Namespace、⭕ Null、🔢 Number、🧰 Object、➗ Operator、🗃️ Package、🟢 Property、🧵 String、💲 Struct、🧬 TypeParameter、🔷 Variable）和符号名称，颜色继承自当前 VS Code 主题。 |
 
 ### Map View
 
@@ -48,6 +48,7 @@
 | ---- | ---- |
 | **工作区符号搜索** | 基于 VS Code Workspace Symbol Provider 在整个工作区检索符号。 |
 | **实时更新结果** | 在搜索框输入时自动触发查询并刷新结果列表（有短暂延时防抖处理）。 |
+| **多关键字匹配** | 支持空格分隔的多关键字查询（AND 关系）；仅展示同时匹配所有关键字的符号（匹配范围：符号名 / 容器名 / 类型名）。 |
 | **搜索模式切换** | 在搜索框上方提供 `Exact` / `Fuzzy` 标签，默认 `Exact`；切换后立即按对应模式查询。 |
 | **排序方式切换** | 在搜索模式右侧提供下拉框，支持 `Relevance`、`Name (A-Z)`、`Name (Z-A)`、`Kind`、`Path`。 |
 | **模式持久化** | `Exact/Fuzzy` 与排序方式会被持久化，重新打开工作区后自动恢复。 |

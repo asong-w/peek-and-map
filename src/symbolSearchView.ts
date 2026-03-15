@@ -170,11 +170,14 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
 
     this._view.webview.postMessage({ type: 'loading', requestId, query: trimmed });
 
+    const keywords = this._splitKeywords(trimmed);
+    const providerQuery = keywords[0] ?? trimmed;
+
     let rawItems: vscode.SymbolInformation[] = [];
     try {
       const result = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
         'vscode.executeWorkspaceSymbolProvider',
-        trimmed
+        providerQuery
       );
       rawItems = result ?? [];
     } catch {
@@ -192,9 +195,7 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
       const containerName = item.containerName ?? '';
       const kind = this._kindToString(item.kind);
       const source = `${name} ${containerName} ${kind}`;
-      return fuzzy
-        ? this._isFuzzyMatch(source, trimmed)
-        : source.toLowerCase().includes(trimmed.toLowerCase());
+      return this._matchesAllKeywords(source, keywords, fuzzy);
     });
 
     const sortedItems = this._sortItems(filteredItems, sortMode);
@@ -260,15 +261,35 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     return sorted;
   }
 
-  private _isFuzzyMatch(source: string, query: string): boolean {
+  private _splitKeywords(query: string): string[] {
+    return query
+      .toLowerCase()
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+  }
+
+  private _matchesAllKeywords(source: string, keywords: string[], fuzzy: boolean): boolean {
     const sourceLower = source.toLowerCase();
+    if (keywords.length === 0) {
+      return true;
+    }
+
+    return keywords.every((keyword) => (
+      fuzzy
+        ? this._isFuzzyMatch(sourceLower, keyword)
+        : sourceLower.includes(keyword)
+    ));
+  }
+
+  private _isFuzzyMatch(source: string, query: string): boolean {
     const queryLower = query.toLowerCase();
     if (!queryLower) {
       return true;
     }
     let queryIndex = 0;
-    for (let sourceIndex = 0; sourceIndex < sourceLower.length; sourceIndex++) {
-      if (sourceLower[sourceIndex] === queryLower[queryIndex]) {
+    for (let sourceIndex = 0; sourceIndex < source.length; sourceIndex++) {
+      if (source[sourceIndex].toLowerCase() === queryLower[queryIndex]) {
         queryIndex++;
         if (queryIndex >= queryLower.length) {
           return true;

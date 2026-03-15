@@ -67,8 +67,8 @@ peek/
 ### `viewCommon.ts` — 视图共享逻辑
 
 - `getThemeColorsCss()`：统一拼接 `generateThemeTokenCss() + generateSymbolKindCss()`，供三个视图推送与初始化主题样式
-- `symbolKindToName()`：统一 `vscode.SymbolKind -> string` 映射，避免各视图重复维护
-- `buildKindIconFunction()`：统一生成 webview 端 `kind -> emoji` 函数代码，确保三个视图图标一致
+- `symbolKindToName()`：统一 `vscode.SymbolKind -> string` 映射（按字母序维护），避免各视图重复维护
+- `buildKindIconFunction()`：统一生成 webview 端 `kind -> emoji` 函数代码（按字母序维护，含 `Global` 扩展类型），确保三个视图图标一致
 
 ### `utils.ts` — 工具函数
 
@@ -149,7 +149,9 @@ peek/
 | `setPeekView(pv)` | 注入 `PeekViewProvider` 引用，用于结果点击时直接更新 Peek |
 | `pushThemeColors()` | 推送主题 token 与符号类型颜色到 webview |
 | `pushInteractionConfig()` | 推送 Symbol Search 交互配置（结果单击行为）到 webview |
-| `_search()` | 调用 `vscode.executeWorkspaceSymbolProvider` 搜索符号，并回传结果列表 |
+| `_search()` | 支持多关键字搜索：先以首关键字调用 `vscode.executeWorkspaceSymbolProvider` 获取候选，再按全部关键字（AND）在 `name/container/kind` 上过滤并回传结果 |
+| `_splitKeywords()` | 将输入按空白分词并标准化为关键字列表 |
+| `_matchesAllKeywords()` | 对候选符号执行“全部关键字都匹配”的过滤逻辑（支持 Exact/Fuzzy） |
 | `_peekLocation()` | 仅更新 Peek View，不打开编辑器 |
 | `_openLocation()` | 打开符号所在文件并定位到具体行列 |
 | `_getHtml()` | 返回搜索框与结果列表的 webview UI，输入实时更新结果；支持单击/双击分流 |
