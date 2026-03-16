@@ -160,6 +160,26 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           this._instanceSessions.delete(this._normalizeInstanceId(msg.instanceId));
           break;
 
+        case 'requestRenameInstance': {
+          const instanceId = this._normalizeInstanceId(msg.instanceId);
+          const currentTitle = typeof msg.currentTitle === 'string' ? msg.currentTitle : '';
+          const nextTitle = await vscode.window.showInputBox({
+            title: 'Rename Map Instance',
+            prompt: 'Enter a new instance name',
+            value: currentTitle,
+            ignoreFocusOut: true,
+            validateInput: (value) => value.trim() ? null : 'Name cannot be empty',
+          });
+          if (typeof nextTitle === 'string' && nextTitle.trim()) {
+            webviewView.webview.postMessage({
+              type: 'instanceRenamed',
+              instanceId,
+              title: nextTitle.trim(),
+            });
+          }
+          break;
+        }
+
         case 'jumpTo': {
           const uri = vscode.Uri.parse(msg.uri as string);
           const pos = new vscode.Position(msg.line as number, msg.character as number);
@@ -709,7 +729,6 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     #instance-tabs-bar {
       display: flex;
       align-items: center;
-      gap: 4px;
       padding: 4px 6px;
       background: var(--vscode-sideBar-background, #252526);
       border-bottom: 1px solid var(--vscode-panel-border, #333);
@@ -776,6 +795,33 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       color: var(--vscode-foreground, #d4d4d4);
       cursor: pointer;
       flex-shrink: 0;
+    }
+    .instance-context-menu {
+      position: fixed;
+      min-width: 140px;
+      padding: 4px;
+      border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border, #333));
+      background: var(--vscode-menu-background, var(--vscode-editorWidget-background, #252526));
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+      z-index: 1000;
+    }
+    .instance-context-menu[hidden] {
+      display: none;
+    }
+    .instance-context-item {
+      width: 100%;
+      height: 24px;
+      border: none;
+      border-radius: 3px;
+      background: transparent;
+      color: var(--vscode-menu-foreground, var(--vscode-foreground, #d4d4d4));
+      text-align: left;
+      padding: 0 8px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .instance-context-item:hover {
+      background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.08));
     }
 
     /* ── Header ─────────────────────────────────────────────────── */
@@ -1019,7 +1065,6 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 <body>
   <div id="instance-tabs-bar">
     <div id="instance-tabs" role="tablist" aria-label="Reference analysis instances"></div>
-    <button id="instance-add-btn" title="New analysis instance">+</button>
   </div>
   <div id="header">
     <button id="search-btn" title="Analyze symbol at cursor"><span class="btn-icon">🔍</span> Analysis</button>
@@ -1051,6 +1096,11 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     <canvas id="graph-canvas"></canvas>
     <div id="graph-hint">Click = peek · Double-click = open &amp; peek · +/- icon = expand/collapse · Scroll = pan · Shift+Scroll/tilt = pan left/right · Ctrl+Scroll = zoom · Drag = pan</div>
   </div>
+  <div id="instance-context-menu" class="instance-context-menu" hidden>
+    <button class="instance-context-item" data-action="rename">Rename</button>
+    <button class="instance-context-item" data-action="close-others">Close Others</button>
+    <button class="instance-context-item" data-action="copy-right">Copy to Right</button>
+  </div>
 
   <script nonce="${nonce}">
     const vscodeApi = acquireVsCodeApi();
@@ -1059,7 +1109,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     const emptyMsg     = document.getElementById('empty-msg');
     const content      = document.getElementById('content');
     const instanceTabs = document.getElementById('instance-tabs');
-    const instanceAddBtn = document.getElementById('instance-add-btn');
+    const instanceContextMenu = document.getElementById('instance-context-menu');
     const searchBtn    = document.getElementById('search-btn');
     const viewTabTree  = document.getElementById('view-tab-tree');
     const viewTabGraph = document.getElementById('view-tab-graph');
@@ -1073,7 +1123,9 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     let defaultNewDirection = 'right';
     let instanceSeed = 0;
     const instanceStateMap = new Map();
+    const instanceOrder = [];
     let activeInstanceId = '';
+    let contextMenuInstanceId = '';
 
     let loadedNodes = new Set();
     let nodeChildrenCache = new Map();  // nodeId → children items[]
@@ -1098,6 +1150,43 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       };
     }
 
+    function cloneNodeChildrenCache(sourceMap) {
+      const cloned = new Map();
+      for (const [nodeId, items] of sourceMap.entries()) {
+        const copiedItems = Array.isArray(items)
+          ? items.map(function(item) { return Object.assign({}, item); })
+          : [];
+        cloned.set(nodeId, copiedItems);
+      }
+      return cloned;
+    }
+
+    function cloneLastUpdateData(data) {
+      if (!data) { return null; }
+      try {
+        return JSON.parse(JSON.stringify(data));
+      } catch {
+        return null;
+      }
+    }
+
+    function insertInstanceOrder(instanceId, afterInstanceId) {
+      const existingIdx = instanceOrder.indexOf(instanceId);
+      if (existingIdx >= 0) {
+        instanceOrder.splice(existingIdx, 1);
+      }
+      if (!afterInstanceId) {
+        instanceOrder.push(instanceId);
+        return;
+      }
+      const idx = instanceOrder.indexOf(afterInstanceId);
+      if (idx < 0) {
+        instanceOrder.push(instanceId);
+        return;
+      }
+      instanceOrder.splice(idx + 1, 0, instanceId);
+    }
+
     function bindInstanceState(state) {
       activeInstanceId = state.id;
       loadedNodes = state.loadedNodes;
@@ -1120,13 +1209,16 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     }
 
     function renderInstanceTabs() {
-      const html = [...instanceStateMap.values()].map(function(state) {
+      const html = instanceOrder.map(function(instanceId) {
+        const state = instanceStateMap.get(instanceId);
+        if (!state) { return ''; }
         const active = state.id === activeInstanceId;
         return '<div class="instance-tab' + (active ? ' active' : '') + '" data-instance-id="' + escapeAttr(state.id) + '" role="tab" aria-selected="' + (active ? 'true' : 'false') + '">'
           + '<span class="instance-tab-title" title="' + escapeAttr(state.title) + '">' + escapeHtml(state.title) + '</span>'
           + '<button class="instance-tab-close" data-instance-id="' + escapeAttr(state.id) + '" title="Close">×</button>'
           + '</div>';
-      }).join('');
+      }).join('')
+        + '<button id="instance-add-btn" title="New analysis instance">+</button>';
       instanceTabs.innerHTML = html;
     }
 
@@ -1168,29 +1260,104 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       applyActiveStateUi();
     }
 
-    function addInstance() {
+    function addInstance(options) {
+      const opts = options || {};
       instanceSeed += 1;
       const id = 'inst_' + instanceSeed;
-      const title = 'Ref ' + instanceSeed;
-      const state = createInstanceState(id, title, defaultNewMode, defaultNewDirection);
+      const title = opts.title || ('Ref ' + instanceSeed);
+      const mode = normalizeViewMode(opts.mode || defaultNewMode);
+      const direction = normalizeGraphDirection(opts.direction || defaultNewDirection);
+      const state = createInstanceState(id, title, mode, direction);
+      if (opts.fromState) {
+        state.loadedNodes = new Set(opts.fromState.loadedNodes || []);
+        state.nodeChildrenCache = cloneNodeChildrenCache(opts.fromState.nodeChildrenCache || new Map());
+        state.expandedNodeIds = new Set(opts.fromState.expandedNodeIds || []);
+        state.lastUpdateData = cloneLastUpdateData(opts.fromState.lastUpdateData);
+      }
       instanceStateMap.set(id, state);
+      insertInstanceOrder(id, opts.afterInstanceId);
       activateInstance(id);
     }
 
     function removeInstance(instanceId) {
       if (!instanceStateMap.has(instanceId)) return;
       if (instanceStateMap.size === 1) return;
-      const ids = [...instanceStateMap.keys()];
-      const idx = ids.indexOf(instanceId);
+      const idx = instanceOrder.indexOf(instanceId);
       instanceStateMap.delete(instanceId);
+      if (idx >= 0) {
+        instanceOrder.splice(idx, 1);
+      }
       vscodeApi.postMessage({ type: 'closeInstance', instanceId });
-      const nextId = ids[idx + 1] || ids[idx - 1] || [...instanceStateMap.keys()][0];
+      hideInstanceContextMenu();
+      const nextId = instanceOrder[idx] || instanceOrder[idx - 1] || instanceOrder[0];
       activateInstance(nextId);
     }
 
-    instanceAddBtn.addEventListener('click', addInstance);
+    function closeOtherInstances(keepId) {
+      if (!instanceStateMap.has(keepId)) { return; }
+      if (instanceStateMap.size <= 1) { return; }
+      const ids = [...instanceOrder];
+      for (const id of ids) {
+        if (id === keepId) { continue; }
+        instanceStateMap.delete(id);
+        vscodeApi.postMessage({ type: 'closeInstance', instanceId: id });
+      }
+      instanceOrder.length = 0;
+      instanceOrder.push(keepId);
+      activateInstance(keepId);
+      hideInstanceContextMenu();
+    }
+
+    function copyInstanceToRight(instanceId) {
+      const state = instanceStateMap.get(instanceId);
+      if (!state) { return; }
+      const copiedTitle = state.title + ' Copy';
+      addInstance({
+        afterInstanceId: instanceId,
+        title: copiedTitle,
+        mode: state.viewMode,
+        direction: state.graphDirection,
+        fromState: state,
+      });
+      hideInstanceContextMenu();
+    }
+
+    function renameInstance(instanceId) {
+      const state = instanceStateMap.get(instanceId);
+      if (!state) { return; }
+      vscodeApi.postMessage({
+        type: 'requestRenameInstance',
+        instanceId,
+        currentTitle: state.title,
+      });
+      hideInstanceContextMenu();
+    }
+
+    function hideInstanceContextMenu() {
+      contextMenuInstanceId = '';
+      instanceContextMenu.hidden = true;
+    }
+
+    function showInstanceContextMenu(instanceId, clientX, clientY) {
+      contextMenuInstanceId = instanceId;
+      instanceContextMenu.hidden = false;
+      instanceContextMenu.style.left = clientX + 'px';
+      instanceContextMenu.style.top = clientY + 'px';
+      const rect = instanceContextMenu.getBoundingClientRect();
+      const maxX = window.innerWidth - rect.width - 4;
+      const maxY = window.innerHeight - rect.height - 4;
+      const x = Math.max(4, Math.min(clientX, maxX));
+      const y = Math.max(4, Math.min(clientY, maxY));
+      instanceContextMenu.style.left = x + 'px';
+      instanceContextMenu.style.top = y + 'px';
+    }
 
     instanceTabs.addEventListener('click', (event) => {
+      const addBtn = event.target.closest('#instance-add-btn');
+      if (addBtn) {
+        addInstance();
+        return;
+      }
       const closeBtn = event.target.closest('.instance-tab-close');
       if (closeBtn) {
         event.stopPropagation();
@@ -1201,6 +1368,44 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       if (!tabEl) return;
       activateInstance(tabEl.dataset.instanceId);
     });
+
+    instanceTabs.addEventListener('contextmenu', (event) => {
+      const tabEl = event.target.closest('.instance-tab');
+      if (!tabEl) { return; }
+      event.preventDefault();
+      const instanceId = tabEl.dataset.instanceId;
+      activateInstance(instanceId);
+      showInstanceContextMenu(instanceId, event.clientX, event.clientY);
+    });
+
+    instanceContextMenu.addEventListener('click', (event) => {
+      const item = event.target.closest('.instance-context-item');
+      if (!item || !contextMenuInstanceId) { return; }
+      const action = item.dataset.action;
+      if (action === 'rename') {
+        renameInstance(contextMenuInstanceId);
+      } else if (action === 'close-others') {
+        closeOtherInstances(contextMenuInstanceId);
+      } else if (action === 'copy-right') {
+        copyInstanceToRight(contextMenuInstanceId);
+      }
+    });
+
+    document.addEventListener('click', (event) => {
+      if (instanceContextMenu.hidden) { return; }
+      if (!event.target.closest('#instance-context-menu')) {
+        hideInstanceContextMenu();
+      }
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        hideInstanceContextMenu();
+      }
+    });
+
+    window.addEventListener('blur', hideInstanceContextMenu);
+    instanceTabs.addEventListener('scroll', hideInstanceContextMenu);
 
     addInstance();
 
@@ -1309,6 +1514,14 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         gWheelPanSensitivity = clampSensitivity(msg.wheelPanSensitivity, 1);
         gWheelTiltPanSensitivity = clampSensitivity(msg.wheelTiltPanSensitivity, 0.28);
         singleClickAction = normalizeSingleClickAction(msg.singleClickAction);
+        return;
+      }
+
+      if (msg.type === 'instanceRenamed') {
+        const state = instanceStateMap.get(msg.instanceId);
+        if (!state) { return; }
+        state.title = String(msg.title || state.title);
+        renderInstanceTabs();
         return;
       }
 
@@ -1548,38 +1761,77 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       }
     }
 
+    function toggleTreeNode(nodeEl, toggleEl) {
+      if (!nodeEl || !toggleEl) { return; }
+      if (nodeEl.dataset.leaf === '1') { return; }
+      const nodeId = nodeEl.dataset.nodeId;
+      const childrenEl = nodeEl.querySelector(':scope > .tree-children');
+      if (!childrenEl) { return; }
+
+      if (loadedNodes.has(nodeId)) {
+        const isVisible = childrenEl.style.display !== 'none';
+        childrenEl.style.display = isVisible ? 'none' : 'block';
+        toggleEl.innerHTML = isVisible
+          ? '<svg viewBox="0 0 16 16"><polyline points="6,2 12,8 6,14"/></svg>'
+          : '<svg viewBox="0 0 16 16"><polyline points="2,6 8,12 14,6"/></svg>';
+        if (isVisible) {
+          expandedNodeIds.delete(nodeId);
+        } else {
+          expandedNodeIds.add(nodeId);
+        }
+      } else {
+        toggleEl.innerHTML = '<svg viewBox="0 0 16 16"><polyline points="6,2 12,8 6,14"/></svg>';
+        toggleEl.classList.add('loading');
+        vscodeApi.postMessage({ type: 'expandRef', instanceId: activeInstanceId, nodeId: nodeId });
+      }
+    }
+
+    function toggleGraphNode(hit) {
+      if (!hit || !graphNodeCanToggle(hit)) { return true; }
+      if (hit.expanded) {
+        graphAnimateCollapse(hit, () => {
+          graphRelayoutKeepView(hit.id, () => {
+            graphCollapse(hit);
+          });
+          graphDraw();
+        });
+        return true;
+      }
+
+      if (nodeChildrenCache.has(hit.id)) {
+        const cached = nodeChildrenCache.get(hit.id);
+        graphHandleChildren(hit.id, cached);
+        if (cached && cached.length > 0) {
+          expandedNodeIds.add(hit.id);
+        }
+        loadedNodes.add(hit.id);
+        return true;
+      }
+      if (loadedNodes.has(hit.id)) { return true; }
+      hit.loading = true;
+      graphDraw();
+      vscodeApi.postMessage({ type: 'expandRef', instanceId: activeInstanceId, nodeId: hit.id });
+      return true;
+    }
+
     // ── Click handlers (tree view) ───────────────────────────────────────
     content.addEventListener('click', (e) => {
       const toggle = e.target.closest('.tree-toggle');
       if (toggle) {
         e.stopPropagation();
         const nodeEl = toggle.closest('.tree-node');
-        if (!nodeEl) return;
-        if (nodeEl.dataset.leaf === '1') return;
-        const nodeId = nodeEl.dataset.nodeId;
-        const childrenEl = nodeEl.querySelector(':scope > .tree-children');
-
-        if (loadedNodes.has(nodeId)) {
-          const isVisible = childrenEl.style.display !== 'none';
-          childrenEl.style.display = isVisible ? 'none' : 'block';
-          toggle.innerHTML = isVisible
-            ? '<svg viewBox="0 0 16 16"><polyline points="6,2 12,8 6,14"/></svg>'
-            : '<svg viewBox="0 0 16 16"><polyline points="2,6 8,12 14,6"/></svg>';
-          if (isVisible) {
-            expandedNodeIds.delete(nodeId);
-          } else {
-            expandedNodeIds.add(nodeId);
-          }
-        } else {
-          toggle.innerHTML = '<svg viewBox="0 0 16 16"><polyline points="6,2 12,8 6,14"/></svg>';
-          toggle.classList.add('loading');
-          vscodeApi.postMessage({ type: 'expandRef', instanceId: activeInstanceId, nodeId: nodeId });
-        }
+        toggleTreeNode(nodeEl, toggle);
         return;
       }
 
       const treeRow = e.target.closest('.tree-row');
       if (treeRow && !e.target.closest('.tree-toggle')) {
+        if (e.ctrlKey) {
+          const nodeEl = treeRow.closest('.tree-node');
+          const toggleEl = nodeEl ? nodeEl.querySelector(':scope > .tree-row .tree-toggle') : null;
+          toggleTreeNode(nodeEl, toggleEl);
+          return;
+        }
         if (e.detail === 1) {
           postSingleClickNavigation(
             treeRow.dataset.uri,
@@ -2916,30 +3168,13 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       const hit = graphHitTest(cx, cy);
       if (!hit) return;
 
+      if (e.ctrlKey) {
+        toggleGraphNode(hit);
+        return;
+      }
+
       if (graphHitTestToggle(hit, cx, cy)) {
-        if (hit.expanded) {
-          graphAnimateCollapse(hit, () => {
-            graphRelayoutKeepView(hit.id, () => {
-              graphCollapse(hit);
-            });
-            graphDraw();
-          });
-        } else {
-          // Re-expand from cache if available
-          if (nodeChildrenCache.has(hit.id)) {
-            const cached = nodeChildrenCache.get(hit.id);
-            graphHandleChildren(hit.id, cached);
-            if (cached && cached.length > 0) {
-              expandedNodeIds.add(hit.id);
-            }
-            loadedNodes.add(hit.id);
-            return;
-          }
-          if (loadedNodes.has(hit.id)) return;
-          hit.loading = true;
-          graphDraw();
-          vscodeApi.postMessage({ type: 'expandRef', instanceId: activeInstanceId, nodeId: hit.id });
-        }
+        toggleGraphNode(hit);
         return;
       }
 

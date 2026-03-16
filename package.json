@@ -2,7 +2,7 @@
   "name": "peek-and-map",
   "displayName": "Peek and Map",
   "description": "Provide two views to peek definition and map relationship",
-  "version": "1.3.5",
+  "version": "1.3.6",
   "publisher": "asong",
   "icon": "media/icon.png",
   "license": "MIT",

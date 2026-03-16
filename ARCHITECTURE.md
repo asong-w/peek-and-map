@@ -95,7 +95,7 @@ peek/
 
 ### `mapView.ts` — Map View 面板
 
-`MapViewProvider` 实现 `WebviewViewProvider`，提供符号引用关系分析，并支持树形列表与图形两种视图模式（图形支持四个方向）：
+`MapViewProvider` 实现 `WebviewViewProvider`，提供符号引用关系分析，并支持树形列表与图形两种视图模式（图形支持四个方向）；Webview 顶部支持多实例标签并行分析：
 
 | 方法 | 说明 |
 |------|------|
@@ -103,9 +103,9 @@ peek/
 | `setPeekView(pv)` | 注入 `PeekViewProvider` 引用，用于点击节点时直接更新预览 |
 | `_saveViewState(mode, direction)` | 持久化视图模式与图形方向到 `workspaceState` |
 | `pushInteractionConfig()` | 将 Map 图形视图交互配置推送到 webview（滚动/拨动灵敏度 + 单击行为） |
-| `_doSearch()` | 按钮触发：分析光标所在符号的引用 |
+| `_doSearch(instanceId)` | 按钮触发：按实例分析光标所在符号的引用 |
 | `_resolveReferencingSymbols()` | 查找引用并定位其所在的封闭符号，构建引用树；包含路径去重（防止同一路径回环）以及“声明不被其定义回引”过滤规则 |
-| `_expandRef()` | 展开引用节点，递归加载子引用 |
+| `_expandRef(instanceId, nodeId)` | 按实例展开引用节点，递归加载子引用 |
 | `_getDocumentSymbols()` | 获取文档符号列表 |
 | `_deepestContaining()` | 递归查找最内层包含指定位置的符号 |
 | `_getHtml()` | 返回 Map View 的 webview HTML/CSS/JS |
@@ -117,6 +117,9 @@ peek/
 | 函数 | 说明 |
 |------|------|
 | `setViewState(mode, direction)` | 在 `Outline` / `Graph` 间切换，并设置图形方向（`'up'` / `'down'` / `'left'` / `'right'`） |
+| `renderInstanceTabs()` | 渲染实例标签栏（标签 + 末尾 `+` 按钮） |
+| `renameInstance()` / `closeOtherInstances()` / `copyInstanceToRight()` | 标签右键菜单动作：重命名、关闭其他、复制到右侧（重命名通过 Extension 侧输入框消息往返完成） |
+| `toggleTreeNode()` / `toggleGraphNode()` | 展开/收起统一逻辑；支持 `Ctrl+单击` 节点切换展开状态 |
 | `renderTreeList()` / `renderTreeNodeHtml()` | 渲染树形列表节点（SVG 箭头、类型徽章、名称、位置） |
 | `stripParams(name)` | 去除函数参数：`"foo(a, b)"` → `"foo"` |
 | `graphBuildFromData(d)` | 从搜索结果构建图形节点/边数据，根符号作为真实节点参与渲染，自动合并同符号的重复引用节点 |
@@ -135,11 +138,17 @@ peek/
 
 | 消息类型（Webview→Extension） | 说明 |
 |------|------|
-| `search` | 触发符号分析 |
-| `expandRef` | 展开树/图节点 |
+| `search` | 触发符号分析（携带 `instanceId`） |
+| `expandRef` | 展开树/图节点（携带 `instanceId`） |
+| `requestRenameInstance` | 请求 Extension 弹出输入框并重命名实例（携带 `instanceId` 与当前标题） |
 | `jumpTo` | 打开编辑器并定位（`preserveFocus: false`），同时通过 `peekLocation()` 更新 Peek View；默认用于双击，也可由 `mapView.singleClickAction` 用于单击 |
 | `peekOnly` | 仅调用 `_peekView.peekLocation()` 更新 Peek View，不打开编辑器；默认用于单击 |
 | `setViewState` | 保存当前 Map 视图状态（`mode` + `direction`） |
+| `closeInstance` | 关闭实例时释放 Extension 端该实例缓存会话 |
+
+| 消息类型（Extension→Webview） | 说明 |
+|------|------|
+| `instanceRenamed` | Extension 完成重命名后，将新标题回推到对应实例标签 |
 
 ### `symbolSearchView.ts` — Symbol Search 面板
 
