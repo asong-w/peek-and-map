@@ -9,13 +9,16 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'mapView.view';
   private static readonly VIEW_MODE_STATE_KEY = 'mapView.viewMode';
   private static readonly GRAPH_DIRECTION_STATE_KEY = 'mapView.graphDirection';
+  private static readonly DEFAULT_INSTANCE_ID = '__default__';
 
   private _view?: vscode.WebviewView;
   private _lastKnownEditor?: vscode.TextEditor;
 
-  // Node maps for lazy tree expansion
-  private _refNodeMap = new Map<string, { uri: vscode.Uri; position: vscode.Position; pathSymbolKeys: string[] }>();
-  private _nodeCounter = 0;
+  // Per-instance node maps for lazy tree expansion
+  private _instanceSessions = new Map<string, {
+    refNodeMap: Map<string, { uri: vscode.Uri; position: vscode.Position; pathSymbolKeys: string[] }>;
+    nodeCounter: number;
+  }>();
   private _peekView?: PeekViewProvider;
   private _viewMode: 'tree' | 'graph';
   private _graphDirection: 'up' | 'down' | 'left' | 'right';
@@ -46,6 +49,28 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     return direction === 'up' || direction === 'down' || direction === 'left' || direction === 'right'
       ? direction
       : fallback;
+  }
+
+  private _normalizeInstanceId(instanceId: unknown): string {
+    if (typeof instanceId !== 'string' || !instanceId.trim()) {
+      return MapViewProvider.DEFAULT_INSTANCE_ID;
+    }
+    return instanceId.trim();
+  }
+
+  private _getOrCreateSession(instanceId: string): {
+    refNodeMap: Map<string, { uri: vscode.Uri; position: vscode.Position; pathSymbolKeys: string[] }>;
+    nodeCounter: number;
+  } {
+    let session = this._instanceSessions.get(instanceId);
+    if (!session) {
+      session = {
+        refNodeMap: new Map<string, { uri: vscode.Uri; position: vscode.Position; pathSymbolKeys: string[] }>(),
+        nodeCounter: 0,
+      };
+      this._instanceSessions.set(instanceId, session);
+    }
+    return session;
   }
 
   private async _saveViewState(mode: unknown, direction: unknown): Promise<void> {
@@ -124,11 +149,15 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           break;
 
         case 'search':
-          await this._doSearch();
+          await this._doSearch(this._normalizeInstanceId(msg.instanceId));
           break;
 
         case 'expandRef':
-          await this._expandRef(msg.nodeId as string);
+          await this._expandRef(this._normalizeInstanceId(msg.instanceId), msg.nodeId as string);
+          break;
+
+        case 'closeInstance':
+          this._instanceSessions.delete(this._normalizeInstanceId(msg.instanceId));
           break;
 
         case 'jumpTo': {
@@ -170,9 +199,17 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     return `${uri.toString()}#sym:${position.line}:${position.character}`;
   }
 
-  private _allocRefNodeId(uri: vscode.Uri, position: vscode.Position, pathSymbolKeys: Set<string>): string {
-    const id = `r${++this._nodeCounter}`;
-    this._refNodeMap.set(id, {
+  private _allocRefNodeId(
+    session: {
+      refNodeMap: Map<string, { uri: vscode.Uri; position: vscode.Position; pathSymbolKeys: string[] }>;
+      nodeCounter: number;
+    },
+    uri: vscode.Uri,
+    position: vscode.Position,
+    pathSymbolKeys: Set<string>
+  ): string {
+    const id = `r${++session.nodeCounter}`;
+    session.refNodeMap.set(id, {
       uri,
       position,
       pathSymbolKeys: [...pathSymbolKeys],
@@ -182,12 +219,13 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
   // ── Search (button-triggered) ──────────────────────────────────────────────
 
-  private async _doSearch(): Promise<void> {
+  private async _doSearch(instanceId: string): Promise<void> {
     if (!this._view) { return; }
+    const session = this._getOrCreateSession(instanceId);
 
     const editor = vscode.window.activeTextEditor ?? this._lastKnownEditor;
     if (!editor) {
-      this._sendEmpty('No active editor');
+      this._sendEmpty('No active editor', instanceId);
       return;
     }
 
@@ -195,23 +233,23 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     const cursor = editor.selection.active;
     const wordRange = doc.getWordRangeAtPosition(cursor);
     if (!wordRange) {
-      this._sendEmpty('Cursor is not on a symbol');
+      this._sendEmpty('Cursor is not on a symbol', instanceId);
       return;
     }
     const word = doc.getText(wordRange);
     const queryPos = cursor;
 
     // Clear maps for new search
-    this._refNodeMap.clear();
-    this._nodeCounter = 0;
+    session.refNodeMap.clear();
+    session.nodeCounter = 0;
 
     // Show loading state
-    this._view.webview.postMessage({ type: 'loading', symbolName: word });
+    this._view.webview.postMessage({ type: 'loading', symbolName: word, instanceId });
 
     const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
 
     // ── References hierarchy (first level) ─────────────────────────────────
-    const refNodes = await this._resolveReferencingSymbols(doc.uri, queryPos, wsRoot);
+    const refNodes = await this._resolveReferencingSymbols(session, doc.uri, queryPos, wsRoot);
 
     // Resolve current symbol + optional owning class for root label/kind
     let rootKind = '';
@@ -256,6 +294,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
     this._view.webview.postMessage({
       type: 'update',
+      instanceId,
       data: {
         rootNode: {
           nodeId: '__root__',
@@ -287,6 +326,10 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
   // can be expanded recursively to find "who references this enclosing symbol".
 
   private async _resolveReferencingSymbols(
+    session: {
+      refNodeMap: Map<string, { uri: vscode.Uri; position: vscode.Position; pathSymbolKeys: string[] }>;
+      nodeCounter: number;
+    },
     uri: vscode.Uri,
     pos: vscode.Position,
     wsRoot: string,
@@ -344,7 +387,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       if (!enclosing) {
         // Reference at file/global scope — always show as leaf node (not expandable)
         result.push({
-          nodeId: `leaf_${++this._nodeCounter}`,
+          nodeId: `leaf_${++session.nodeCounter}`,
           label: path.basename(loc.uri.fsPath) + ' (global)',
           detail: this._relativePath(loc.uri.fsPath, wsRoot),
           line: loc.range.start.line,
@@ -401,8 +444,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       if (isFirst) { firstSeenKeys.add(symKey); }
 
       const nodeId = isFirst
-        ? this._allocRefNodeId(loc.uri, symStart, new Set<string>([...pathSymbolKeys, symKey]))
-        : `leaf_${++this._nodeCounter}`;
+        ? this._allocRefNodeId(session, loc.uri, symStart, new Set<string>([...pathSymbolKeys, symKey]))
+        : `leaf_${++session.nodeCounter}`;
 
       result.push({
         nodeId,
@@ -424,21 +467,23 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
   // ── Expand: Reference hierarchy ────────────────────────────────────────────
 
-  private async _expandRef(nodeId: string): Promise<void> {
+  private async _expandRef(instanceId: string, nodeId: string): Promise<void> {
     if (!this._view) { return; }
-    const info = this._refNodeMap.get(nodeId);
+    const session = this._getOrCreateSession(instanceId);
+    const info = session.refNodeMap.get(nodeId);
     if (!info) {
-      this._view.webview.postMessage({ type: 'children', parentNodeId: nodeId, items: [] });
+      this._view.webview.postMessage({ type: 'children', instanceId, parentNodeId: nodeId, items: [] });
       return;
     }
     const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
     const children = await this._resolveReferencingSymbols(
+      session,
       info.uri,
       info.position,
       wsRoot,
       new Set<string>(info.pathSymbolKeys)
     );
-    this._view.webview.postMessage({ type: 'children', parentNodeId: nodeId, items: children });
+    this._view.webview.postMessage({ type: 'children', instanceId, parentNodeId: nodeId, items: children });
   }
 
   // ── Symbol helpers ─────────────────────────────────────────────────────────
@@ -628,8 +673,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     return 'Method';
   }
 
-  private _sendEmpty(msg: string): void {
-    this._view?.webview.postMessage({ type: 'empty', message: msg });
+  private _sendEmpty(msg: string, instanceId: string): void {
+    this._view?.webview.postMessage({ type: 'empty', message: msg, instanceId });
   }
 
   // ── HTML ───────────────────────────────────────────────────────────────────
@@ -659,6 +704,78 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       display: flex;
       flex-direction: column;
       overflow: hidden;
+    }
+
+    #instance-tabs-bar {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 6px;
+      background: var(--vscode-sideBar-background, #252526);
+      border-bottom: 1px solid var(--vscode-panel-border, #333);
+      flex-shrink: 0;
+      min-height: 30px;
+      overflow: hidden;
+    }
+    #instance-tabs {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+    .instance-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 22px;
+      padding: 0 8px;
+      border: 1px solid var(--vscode-panel-border, #333);
+      border-radius: 4px;
+      background: var(--vscode-tab-inactiveBackground, #2d2d2d);
+      color: var(--vscode-tab-inactiveForeground, #ccc);
+      cursor: pointer;
+      flex-shrink: 0;
+      max-width: 200px;
+    }
+    .instance-tab.active {
+      background: var(--vscode-tab-activeBackground, #1e1e1e);
+      color: var(--vscode-tab-activeForeground, #fff);
+    }
+    .instance-tab-title {
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .instance-tab-close {
+      width: 14px;
+      height: 14px;
+      border: none;
+      border-radius: 3px;
+      background: transparent;
+      color: inherit;
+      line-height: 1;
+      cursor: pointer;
+      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .instance-tab-close:hover {
+      background: var(--vscode-toolbar-hoverBackground, rgba(255,255,255,0.08));
+    }
+    #instance-add-btn {
+      width: 24px;
+      height: 22px;
+      border: 1px solid var(--vscode-panel-border, #333);
+      border-radius: 4px;
+      background: var(--vscode-tab-inactiveBackground, #2d2d2d);
+      color: var(--vscode-foreground, #d4d4d4);
+      cursor: pointer;
+      flex-shrink: 0;
     }
 
     /* ── Header ─────────────────────────────────────────────────── */
@@ -900,6 +1017,10 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
   <style id="theme-tokens">${initialThemeCss}</style>
 </head>
 <body>
+  <div id="instance-tabs-bar">
+    <div id="instance-tabs" role="tablist" aria-label="Reference analysis instances"></div>
+    <button id="instance-add-btn" title="New analysis instance">+</button>
+  </div>
   <div id="header">
     <button id="search-btn" title="Analyze symbol at cursor"><span class="btn-icon">🔍</span> Analysis</button>
     <div id="view-tabs" role="tablist" aria-label="Map View Mode">
@@ -937,6 +1058,8 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
     const emptyMsg     = document.getElementById('empty-msg');
     const content      = document.getElementById('content');
+    const instanceTabs = document.getElementById('instance-tabs');
+    const instanceAddBtn = document.getElementById('instance-add-btn');
     const searchBtn    = document.getElementById('search-btn');
     const viewTabTree  = document.getElementById('view-tab-tree');
     const viewTabGraph = document.getElementById('view-tab-graph');
@@ -946,15 +1069,140 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     const graphCanvas   = document.getElementById('graph-canvas');
     const refSection    = document.getElementById('sec-references');
 
-    const loadedNodes = new Set();
-    const nodeChildrenCache = new Map();  // nodeId → children items[]
-    const expandedNodeIds = new Set();    // nodeIds currently expanded
+    let defaultNewMode = 'tree';
+    let defaultNewDirection = 'right';
+    let instanceSeed = 0;
+    const instanceStateMap = new Map();
+    let activeInstanceId = '';
+
+    let loadedNodes = new Set();
+    let nodeChildrenCache = new Map();  // nodeId → children items[]
+    let expandedNodeIds = new Set();    // nodeIds currently expanded
 
     // ── View mode: 'tree' | 'graph' ─────────────────────────────────────
     let viewMode = 'tree';
     let graphDirection = 'right'; // 'up' | 'down' | 'left' | 'right'
     // Store last update data for graph rendering
     let lastUpdateData = null;
+
+    function createInstanceState(id, title, mode, direction) {
+      return {
+        id,
+        title,
+        viewMode: mode,
+        graphDirection: direction,
+        loadedNodes: new Set(),
+        nodeChildrenCache: new Map(),
+        expandedNodeIds: new Set(),
+        lastUpdateData: null,
+      };
+    }
+
+    function bindInstanceState(state) {
+      activeInstanceId = state.id;
+      loadedNodes = state.loadedNodes;
+      nodeChildrenCache = state.nodeChildrenCache;
+      expandedNodeIds = state.expandedNodeIds;
+      viewMode = state.viewMode;
+      graphDirection = state.graphDirection;
+      lastUpdateData = state.lastUpdateData;
+    }
+
+    function syncActiveState() {
+      const state = instanceStateMap.get(activeInstanceId);
+      if (!state) return;
+      state.viewMode = viewMode;
+      state.graphDirection = graphDirection;
+      state.lastUpdateData = lastUpdateData;
+      state.loadedNodes = loadedNodes;
+      state.nodeChildrenCache = nodeChildrenCache;
+      state.expandedNodeIds = expandedNodeIds;
+    }
+
+    function renderInstanceTabs() {
+      const html = [...instanceStateMap.values()].map(function(state) {
+        const active = state.id === activeInstanceId;
+        return '<div class="instance-tab' + (active ? ' active' : '') + '" data-instance-id="' + escapeAttr(state.id) + '" role="tab" aria-selected="' + (active ? 'true' : 'false') + '">'
+          + '<span class="instance-tab-title" title="' + escapeAttr(state.title) + '">' + escapeHtml(state.title) + '</span>'
+          + '<button class="instance-tab-close" data-instance-id="' + escapeAttr(state.id) + '" title="Close">×</button>'
+          + '</div>';
+      }).join('');
+      instanceTabs.innerHTML = html;
+    }
+
+    function applyActiveStateUi() {
+      updateViewTabs();
+      if (!lastUpdateData) {
+        emptyMsg.textContent = 'Place cursor on a symbol, then click "Analysis"';
+        emptyMsg.style.display = 'flex';
+        content.style.display = 'none';
+        graphContainer.style.display = 'none';
+        return;
+      }
+
+      emptyMsg.style.display = 'none';
+      if (isGraphMode(viewMode)) {
+        content.style.display = 'none';
+        graphContainer.style.display = 'block';
+        graphBuildFromData(lastUpdateData);
+        restoreGraphExpansions();
+        graphLayout();
+        graphDraw();
+      } else {
+        graphContainer.style.display = 'none';
+        content.style.display = 'block';
+        const rootNode = lastUpdateData.rootNode || null;
+        renderTreeList(refSection, rootNode ? [rootNode] : (lastUpdateData.refNodes || []), 0);
+        restoreTreeExpansions(refSection);
+      }
+    }
+
+    function activateInstance(instanceId) {
+      const next = instanceStateMap.get(instanceId);
+      if (!next) return;
+      if (activeInstanceId) {
+        syncActiveState();
+      }
+      bindInstanceState(next);
+      renderInstanceTabs();
+      applyActiveStateUi();
+    }
+
+    function addInstance() {
+      instanceSeed += 1;
+      const id = 'inst_' + instanceSeed;
+      const title = 'Ref ' + instanceSeed;
+      const state = createInstanceState(id, title, defaultNewMode, defaultNewDirection);
+      instanceStateMap.set(id, state);
+      activateInstance(id);
+    }
+
+    function removeInstance(instanceId) {
+      if (!instanceStateMap.has(instanceId)) return;
+      if (instanceStateMap.size === 1) return;
+      const ids = [...instanceStateMap.keys()];
+      const idx = ids.indexOf(instanceId);
+      instanceStateMap.delete(instanceId);
+      vscodeApi.postMessage({ type: 'closeInstance', instanceId });
+      const nextId = ids[idx + 1] || ids[idx - 1] || [...instanceStateMap.keys()][0];
+      activateInstance(nextId);
+    }
+
+    instanceAddBtn.addEventListener('click', addInstance);
+
+    instanceTabs.addEventListener('click', (event) => {
+      const closeBtn = event.target.closest('.instance-tab-close');
+      if (closeBtn) {
+        event.stopPropagation();
+        removeInstance(closeBtn.dataset.instanceId);
+        return;
+      }
+      const tabEl = event.target.closest('.instance-tab');
+      if (!tabEl) return;
+      activateInstance(tabEl.dataset.instanceId);
+    });
+
+    addInstance();
 
     function updateViewTabs() {
       const treeActive = viewMode === 'tree';
@@ -1006,8 +1254,11 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       }
 
       if (opts.persist !== false) {
+        defaultNewMode = viewMode;
+        defaultNewDirection = graphDirection;
         vscodeApi.postMessage({ type: 'setViewState', mode: viewMode, direction: graphDirection });
       }
+      syncActiveState();
     }
 
     viewTabTree.addEventListener('click', () => setViewState('tree', graphDirection));
@@ -1016,23 +1267,30 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
     // ── Search button ────────────────────────────────────────────────────
     searchBtn.addEventListener('click', () => {
-      vscodeApi.postMessage({ type: 'search' });
+      vscodeApi.postMessage({ type: 'search', instanceId: activeInstanceId });
     });
 
     // ── Messages from extension ──────────────────────────────────────────
     window.addEventListener('message', (event) => {
       const msg = event.data;
+      const msgInstanceId = msg && typeof msg.instanceId === 'string' ? msg.instanceId : activeInstanceId;
 
       if (msg.type === 'empty') {
+        if (msgInstanceId !== activeInstanceId) { return; }
         emptyMsg.textContent   = msg.message;
         emptyMsg.style.display = 'flex';
         content.style.display  = 'none';
         graphContainer.style.display = 'none';
         lastUpdateData = null;
+        loadedNodes.clear();
+        nodeChildrenCache.clear();
+        expandedNodeIds.clear();
+        syncActiveState();
         return;
       }
 
       if (msg.type === 'loading') {
+        if (msgInstanceId !== activeInstanceId) { return; }
         emptyMsg.textContent   = 'Analyzing ' + msg.symbolName + ' ...';
         emptyMsg.style.display = 'flex';
         content.style.display  = 'none';
@@ -1055,7 +1313,10 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       }
 
       if (msg.type === 'initViewState') {
+        defaultNewMode = normalizeViewMode(msg.mode);
+        defaultNewDirection = normalizeGraphDirection(msg.direction);
         setViewState(msg.mode, msg.direction, { persist: false });
+        syncActiveState();
         return;
       }
 
@@ -1065,10 +1326,16 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       }
 
       if (msg.type === 'update') {
+        if (msgInstanceId !== activeInstanceId) { return; }
         loadedNodes.clear();
         nodeChildrenCache.clear();
         expandedNodeIds.clear();
         const d = msg.data;
+        const activeState = instanceStateMap.get(activeInstanceId);
+        if (activeState && d && d.symbolName) {
+          activeState.title = String(d.symbolName);
+          renderInstanceTabs();
+        }
         const rootNode = d.rootNode || null;
         lastUpdateData = d;
         emptyMsg.style.display   = 'none';
@@ -1093,15 +1360,18 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           graphContainer.style.display = 'block';
           graphBuildFromData(d);
         }
+        syncActiveState();
         return;
       }
 
       // Children for a tree node (incremental expansion)
       if (msg.type === 'children') {
+        if (msgInstanceId !== activeInstanceId) { return; }
         const parentNodeId = msg.parentNodeId;
         loadedNodes.add(parentNodeId);
         nodeChildrenCache.set(parentNodeId, msg.items || []);
         expandedNodeIds.add(parentNodeId);
+        syncActiveState();
 
         // ── Graph expand ──────────────────────────────────────────
         if (isGraphMode(viewMode)) {
@@ -1303,7 +1573,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         } else {
           toggle.innerHTML = '<svg viewBox="0 0 16 16"><polyline points="6,2 12,8 6,14"/></svg>';
           toggle.classList.add('loading');
-          vscodeApi.postMessage({ type: 'expandRef', nodeId: nodeId });
+          vscodeApi.postMessage({ type: 'expandRef', instanceId: activeInstanceId, nodeId: nodeId });
         }
         return;
       }
@@ -2668,7 +2938,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
           if (loadedNodes.has(hit.id)) return;
           hit.loading = true;
           graphDraw();
-          vscodeApi.postMessage({ type: 'expandRef', nodeId: hit.id });
+          vscodeApi.postMessage({ type: 'expandRef', instanceId: activeInstanceId, nodeId: hit.id });
         }
         return;
       }
