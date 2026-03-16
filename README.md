@@ -1,6 +1,6 @@
 # Peek and Map
 
-一个 **99% AI + 1% Idea** 的 VS Code 插件，实现 **Peek View**、**Map View** 和 **Symbol Search** 三个视图，提供部分source insight的体验。
+一个 **"99%AI + 1%Idea"** 的 VS Code 插件，实现了 **Peek View**、**Map View** 和 **Symbol Search** 三个视图，提供类似source insight的部分体验。
 
 - **Peek View**：实时展示光标处符号的定义体，跟随编辑器语法高亮、支持视图内跳转、前进后退导航和快速字体调整。
 - **Map View**：分析光标处符号的引用关系，支持 `Outline` / `Graph` 两种视图；`Graph` 支持上下左右四个生长方向，支持递归展开和跳转。
@@ -19,9 +19,9 @@
 
 | 功能 | 说明 |
 | ---- | ---- |
-| **显示光标处符号的定义** | 光标选中符号时，自动展示该符号的**定义体**（函数/方法/类/结构体/宏）。 |
+| **显示光标处符号的定义** | 光标选中符号时，自动展示该符号的**定义体**（函数/方法/类/结构体/宏等等）。 |
 | **实时跟随光标** | 光标在编辑器中移动时，视图内容自动刷新。 |
-| **当前行高亮** | Peek 视图高亮当前定位行，便于快速识别定义位置。 |
+| **当前行高亮** | Peek 视图内高亮当前定位行，便于快速识别定义位置。 |
 | **保持上次内容** | 光标移到空白、注释或无法解析定义的位置时，视图保持上一次的显示内容不变，避免频繁闪烁。 |
 | **语法高亮** | 基于本地 Prism.js，支持 TypeScript、Python、C/C++、Go、Rust、Java、C# 等 30+ 种语言。 |
 | **继承编辑器主题配色** | 自动读取当前 VS Code 主题（包括第三方主题）的 `tokenColors`，将 TextMate scope 映射到 Prism token，语法高亮颜色与编辑器完全一致；但是切换主题时还不能及时自动更新，可能要重启vscode。 |
@@ -83,6 +83,7 @@
 
 TypeScript · JavaScript · TSX · JSX · Python · Java · C · C++ · C# · Go · Rust · Ruby · PHP · Swift · Kotlin · HTML · XML · CSS · SCSS · Less · JSON · YAML · Markdown · Bash/Shell · PowerShell · Lua · R · Dart · Scala · Groovy · Perl
 
+仅在c/cpp做了一定程度的测试，其他语言实际体验暂时不敢保证。
 不在上述列表中的语言回退到通用 `clike` 高亮。
 
 ---
@@ -90,7 +91,6 @@ TypeScript · JavaScript · TSX · JSX · Python · Java · C · C++ · C# · Go
 ## 已知限制
 
 - 需要对应语言的扩展提供 `DocumentSymbolProvider`。纯文本文件或小众语言会显示「当前语言暂不支持符号解析」。
-- 超大函数体（>5000 行）的表格渲染可能有轻微卡顿。
 - 主题配色映射基于 TextMate scope → Prism token 的静态映射表，极少数自定义 scope 可能无法覆盖，此时回退到编辑器前景色。
 
 ---
