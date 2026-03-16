@@ -2,7 +2,7 @@
 
 一个 **99% AI + 1% Idea** 的 VS Code 插件，实现 **Peek View**、**Map View** 和 **Symbol Search** 三个视图，提供部分source insight的体验。
 
-- **Peek View**：实时展示光标处符号的定义体，跟随编辑器语法高亮、支持视图内跳转、前进后退导航和快速字体调整。
+- **Peek View**：实时展示光标处符号的定义体，跟随编辑器语法高亮、支持视图内跳转、前进后退导航、锁定跟随和快速字体调整。
 - **Map View**：分析光标处符号的引用关系，支持 `Outline` / `Graph` 两种视图；`Graph` 支持上下左右四个生长方向，支持递归展开和跳转。
 - **Symbol Search**：在工作区内按关键字搜索符号（支持空格分隔多关键字 AND 匹配），输入时实时刷新结果列表；默认单击仅更新 Peek，双击跳转到定义位置（单击行为可配置）。
 
@@ -28,6 +28,7 @@
 | **编辑器代码跳转** | 在视图中双击空白区域或单击行号，编辑器即跳转到对应位置；双击代码文本仅选中文本。 |
 | **视图内跳转** | 在视图中按住 Ctrl 并点击函数/类型/宏等符号，直接在 Peek 视图内跳转到该符号的定义，无需离开视图。 |
 | **前进/后退导航** | Ctrl+点击跳转后可通过**视图内**左上角按钮或鼠标侧键在历史记录中切换。 |
+| **锁定跟随** | 前进/后退按钮左侧提供锁定按钮；锁定后 Peek 不再响应编辑器光标变化，但仍可在视图内 Ctrl+点击跳转并使用前进/后退。 |
 | **快速缩放字体** | 按住 Ctrl 并滚动鼠标滚轮可调整视图字体大小（8–40px），缩放时当前可见的第一行保持不变；设置会自动持久化。 |
 | **符号类型图标** | 顶栏符号左侧显示彩色 Emoji 图标（按字母序：🗂️ Array、⚖️ Boolean、📱 Class、⭐ Constant、📲 Constructor、🏷️ Enum、🔖 EnumMember、🎯 Event、🟠 Field、📄 File、💿 Function、🔵 Global、🔗 Interface、🗝️ Key、📀 Method、📦 Module、📃 Namespace、⭕ Null、🔢 Number、🧰 Object、➗ Operator、🗃️ Package、🟢 Property、🧵 String、💲 Struct、🧬 TypeParameter、🔷 Variable）和符号名称，颜色继承自当前 VS Code 主题。 |
 
@@ -68,6 +69,7 @@
 | ---- | ---- | ---- | ---- |
 | `peekView.fontSize` | number | 13 | Peek 视图字体大小（px）。 |
 | `peekView.contextPadding` | number | 30 | 在符号定义体**上方和下方**各额外显示的行数（范围 0–500）；设置大范围方便查看更多上下文，设置 0 则仅显示选中的符号定义。 |
+| `peekView.historyCacheLimit` | number | 15 | Peek 视图环形历史缓存容量（范围 5–50）；光标更新与视图内跳转都会写入，容量满时覆盖最旧记录。 |
 | `mapView.wheelPanSensitivity` | number | 1 | Map 图形视图中滚轮滚动平移灵敏度（普通滚轮上下平移与 `Shift+滚轮` 左右平移）。 |
 | `mapView.wheelTiltPanSensitivity` | number | 0.3 | Map 图形视图中鼠标滚轮左右拨动（水平滚轮）平移灵敏度。 |
 | `mapView.singleClickAction` | string | `peekOnly` | Map 视图节点单击行为：`peekOnly`（仅更新 Peek）或 `jumpTo`（同时更新 Peek 和编辑器）。 |

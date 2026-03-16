@@ -122,9 +122,9 @@ webview 的内联脚本在 DOM 解析完成后**同步执行**，第一行就向
 
 `update()` 调用 `executeDefinitionProvider`，获取光标处标识符的定义位置（可能在完全不同的文件）。找到后调用 `_getContextFromLocation()` 打开定义文件并展示定义体。若光标处没有可解析的定义（空白、注释、语言无 provider），面板**保持上次内容不变**，避免频繁清空或闪烁。
 
-**3. Ctrl+点击视图内跳转 + 前进后退导航**
+**3. Ctrl+点击视图内跳转 + 前进后退导航（环形历史）+ 锁定跟随**
 
-Peek 视图中按住 Ctrl 并点击符号，扩展会调用 `executeDefinitionProvider` 解析该符号的定义，并将结果直接显示在当前面板，无需离开 Peek 视图。每次 Ctrl+点击跳转会将当前显示内容压入后退栈，支持通过底部按钮或鼠标侧键（button 3/4）在历史中前进/后退。当编辑器光标移动导致内容刷新时，导航历史会自动重置。
+Peek 视图中按住 Ctrl 并点击符号，扩展会调用 `executeDefinitionProvider` 解析该符号的定义，并将结果直接显示在当前面板，无需离开 Peek 视图。编辑器光标驱动刷新与视图内 Ctrl+点击跳转都会追加到同一条环形历史中；容量达到 `peekView.historyCacheLimit` 后覆盖最旧记录，支持通过顶部按钮或鼠标侧键（button 3/4）在历史中前进/后退。前进/后退按钮左侧提供锁定按钮：锁定后 Peek 不再接收编辑器光标变化，但视图内跳转与前进/后退仍可正常使用。
 
 **4. 双击交互区分**
 
@@ -142,10 +142,10 @@ prism.js、主题 CSS 和所有语言组件均存放在 `media/` 目录，通过
 
 扩展直接读取当前 VS Code 主题的 JSON 文件（通过 `vscode.extensions.all` 定位主题扩展），解析其 `tokenColors` 数组，根据 `PRISM_TO_TEXTMATE` 映射表将 TextMate scope 转换为 Prism `.token.xxx` 的 CSS 颜色规则。初始化时嵌入 HTML，主题切换时通过 `postMessage` 动态更新 `<style>` 标签，无需重建 webview。支持 JSONC 注释、尾逗号和 `include` 继承链。三视图统一通过 `viewCommon.getThemeColorsCss()` 复用相同样式拼接逻辑，确保展示一致。
 
-**8. 记录最后已知编辑器（解决面板夺焦问题）**
+**8. 记录最后已知编辑器（解决面板夺焦问题）+ 锁定时屏蔽光标驱动刷新**
 
 底部面板获得鼠标焦点时，`vscode.window.activeTextEditor` 变为 `undefined`。
-`PeekViewProvider` 持有 `_lastKnownEditor`，在所有编辑器/光标变化事件中更新它。`update()` 优先使用 `activeTextEditor`，回退到 `_lastKnownEditor`，保证面板有焦点时内容仍然正确。
+`PeekViewProvider` 持有 `_lastKnownEditor`，在所有编辑器/光标变化事件中更新它。`update()` 优先使用 `activeTextEditor`，回退到 `_lastKnownEditor`，保证面板有焦点时内容仍然正确。若 Peek 锁定按钮处于启用状态，编辑器光标触发的 `update()` 会被跳过（但视图内导航不受影响）。
 
 **9. 增量去重**
 

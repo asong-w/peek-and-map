@@ -80,10 +80,11 @@ peek/
 
 | 方法 | 说明 |
 |------|------|
-| `notifyEditorChange()` | 外部调用：记录最后已知编辑器并触发更新 |
+| `notifyEditorChange()` | 外部调用：记录最后已知编辑器并触发更新（锁定时忽略编辑器驱动刷新） |
 | `pushThemeColors()` | 将主题 token CSS 推送到 webview |
 | `resolveWebviewView()` | 注册面板、设置消息总线 |
 | `update()` | 核心：definition provider → 符号树 → webview |
+| `_sendLockState()` | 将 Peek 锁定状态推送到 webview（用于按钮状态同步） |
 | `_getContextFromLocation()` | 打开定义文件，解析符号，构造 ContextInfo |
 | `_findContext()` | 遍历当前文件 DocumentSymbol 树（fallback） |
 | `_deepestContaining()` | 递归树搜索最内层符号 |

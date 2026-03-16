@@ -12,6 +12,7 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
   private _lastUri?: string;
   private _lastVersion?: number;
   private _lastLine?: number;
+  private _isLocked = false;
 
   // Tracks the last text editor that had focus.
   // When the Context panel is clicked, the editor loses focus and
@@ -19,10 +20,11 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
   // this cached reference so updates still work while the panel is active.
   private _lastKnownEditor?: vscode.TextEditor;
 
-  // ── Navigation history (back / forward) ──────────────────────────────────
-  private _navBackStack: ContextInfo[] = [];
-  private _navForwardStack: ContextInfo[] = [];
-  private _currentNavEntry?: ContextInfo;
+  // ── Navigation history ring (back / forward) ─────────────────────────────
+  // New entries are always appended by cursor-driven updates and in-view jumps.
+  // When capacity is reached, the oldest entry is overwritten (ring semantics).
+  private _navHistoryRing: ContextInfo[] = [];
+  private _navHistoryIndex = -1;
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -31,7 +33,7 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     if (editor) {
       this._lastKnownEditor = editor;
     }
-    this.update();
+    this.update({ editorDriven: true });
   }
 
   /** Push current theme token colors to the webview. */
@@ -66,8 +68,19 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
         case 'ready':
           this._resetDedup();
           this.pushThemeColors();
+          this._sendLockState();
           this.update();
           break;
+
+        case 'toggleLock': {
+          this._isLocked = Boolean(msg.locked);
+          this._sendLockState();
+          if (!this._isLocked) {
+            this._resetDedup();
+            this.update();
+          }
+          break;
+        }
 
         // User clicked a line number → navigate to definition location (cross-file)
         case 'jumpToLine': {
@@ -121,14 +134,7 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
                 : (loc as vscode.Location).range;
               const ctx = await this._getContextFromLocation(defUri, defRange.start);
               if (ctx) {
-                // Push current entry onto back stack before navigating
-                if (this._currentNavEntry) {
-                  this._navBackStack.push(this._currentNavEntry);
-                }
-                this._navForwardStack = [];
-                this._currentNavEntry = ctx;
-                this._view!.webview.postMessage({ type: 'update', data: ctx });
-                this._sendNavState();
+                this._appendCurrentContext(ctx);
               }
             }
           } catch { /* no provider */ }
@@ -137,23 +143,11 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
 
         // Navigation: back / forward
         case 'navBack': {
-          if (this._navBackStack.length === 0) { break; }
-          if (this._currentNavEntry) {
-            this._navForwardStack.push(this._currentNavEntry);
-          }
-          this._currentNavEntry = this._navBackStack.pop()!;
-          this._view!.webview.postMessage({ type: 'update', data: this._currentNavEntry });
-          this._sendNavState();
+          this._moveHistory(-1);
           break;
         }
         case 'navForward': {
-          if (this._navForwardStack.length === 0) { break; }
-          if (this._currentNavEntry) {
-            this._navBackStack.push(this._currentNavEntry);
-          }
-          this._currentNavEntry = this._navForwardStack.pop()!;
-          this._view!.webview.postMessage({ type: 'update', data: this._currentNavEntry });
-          this._sendNavState();
+          this._moveHistory(1);
           break;
         }
       }
@@ -168,8 +162,12 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  async update(): Promise<void> {
+  async update(options: { editorDriven?: boolean } = {}): Promise<void> {
     if (!this._view || !this._view.visible) {
+      return;
+    }
+
+    if (options.editorDriven && this._isLocked) {
       return;
     }
 
@@ -226,12 +224,7 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
 
       const ctx = await this._getContextFromLocation(defUri, defPos);
       if (ctx) {
-        // Normal cursor-driven update resets the navigation history
-        this._navBackStack = [];
-        this._navForwardStack = [];
-        this._currentNavEntry = ctx;
-        this._view.webview.postMessage({ type: 'update', data: ctx });
-        this._sendNavState();
+        this._appendCurrentContext(ctx);
         return;
       }
     }
@@ -248,13 +241,7 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     if (!this._view) { return; }
     const ctx = await this._getContextFromLocation(uri, pos);
     if (ctx) {
-      if (this._currentNavEntry) {
-        this._navBackStack.push(this._currentNavEntry);
-      }
-      this._navForwardStack = [];
-      this._currentNavEntry = ctx;
-      this._view.webview.postMessage({ type: 'update', data: ctx });
-      this._sendNavState();
+      this._appendCurrentContext(ctx);
     }
   }
 
@@ -488,13 +475,76 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     this._view?.webview.postMessage({ type: 'empty', message: msg });
   }
 
+  private _sendLockState(): void {
+    if (!this._view) { return; }
+    this._view.webview.postMessage({ type: 'lockState', locked: this._isLocked });
+  }
+
+  private _appendCurrentContext(next: ContextInfo): void {
+    if (!this._view) { return; }
+
+    // If we are currently in the middle of history (after going back),
+    // appending a new entry starts a new branch and drops forward entries.
+    if (this._navHistoryIndex < this._navHistoryRing.length - 1) {
+      this._navHistoryRing.splice(this._navHistoryIndex + 1);
+    }
+
+    const limit = this._historyCacheLimit();
+    if (this._navHistoryRing.length < limit) {
+      this._navHistoryRing.push(next);
+    } else {
+      // Ring behavior: full capacity -> overwrite the oldest entry.
+      this._navHistoryRing.shift();
+      this._navHistoryRing.push(next);
+    }
+
+    this._navHistoryIndex = this._navHistoryRing.length - 1;
+    this._view.webview.postMessage({ type: 'update', data: next });
+    this._sendNavState();
+  }
+
+  private _moveHistory(delta: -1 | 1): void {
+    if (!this._view) { return; }
+    this._trimHistoryToLimit();
+    if (this._navHistoryRing.length === 0 || this._navHistoryIndex < 0) { return; }
+
+    const nextIndex = this._navHistoryIndex + delta;
+    if (nextIndex < 0 || nextIndex >= this._navHistoryRing.length) { return; }
+
+    this._navHistoryIndex = nextIndex;
+    const entry = this._navHistoryRing[this._navHistoryIndex];
+    this._view.webview.postMessage({ type: 'update', data: entry });
+    this._sendNavState();
+  }
+
+  private _trimHistoryToLimit(): void {
+    const limit = this._historyCacheLimit();
+    if (this._navHistoryRing.length <= limit) { return; }
+
+    const overflow = this._navHistoryRing.length - limit;
+    this._navHistoryRing.splice(0, overflow);
+    this._navHistoryIndex = Math.max(0, this._navHistoryIndex - overflow);
+    if (this._navHistoryIndex >= this._navHistoryRing.length) {
+      this._navHistoryIndex = this._navHistoryRing.length - 1;
+    }
+  }
+
+  private _historyCacheLimit(): number {
+    const configured = vscode.workspace
+      .getConfiguration('peekView')
+      .get<number>('historyCacheLimit', 15);
+    const n = Number.isFinite(configured) ? configured : 15;
+    return Math.max(5, Math.min(50, Math.floor(n)));
+  }
+
   /** Send current navigation stack state so webview can enable/disable buttons. */
   private _sendNavState(): void {
     if (!this._view) { return; }
+    this._trimHistoryToLimit();
     this._view.webview.postMessage({
       type: 'navState',
-      canBack: this._navBackStack.length > 0,
-      canForward: this._navForwardStack.length > 0,
+      canBack: this._navHistoryIndex > 0,
+      canForward: this._navHistoryIndex >= 0 && this._navHistoryIndex < this._navHistoryRing.length - 1,
     });
   }
 
@@ -603,6 +653,13 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     .nav-btn:hover:not(:disabled) {
       background: var(--vscode-toolbar-hoverBackground, rgba(90,93,94,0.31));
     }
+    .nav-btn.active {
+      color: var(--vscode-button-foreground, #fff);
+      background: var(--vscode-button-background, #0e639c);
+    }
+    .nav-btn.active:hover:not(:disabled) {
+      background: var(--vscode-button-hoverBackground, #1177bb);
+    }
     .nav-btn:disabled {
       opacity: 0.3;
       cursor: default;
@@ -697,6 +754,7 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div id="header">
+    <button class="nav-btn" id="lock-btn" title="锁定：忽略编辑器光标更新（视图内导航仍可用）">🔓</button>
     <button class="nav-btn" id="nav-back-btn" disabled title="后退 (鼠标侧键)"><svg viewBox="0 0 16 16"><polyline points="10,2 4,8 10,14"/></svg></button>
     <button class="nav-btn" id="nav-forward-btn" disabled title="前进 (鼠标侧键)"><svg viewBox="0 0 16 16"><polyline points="6,2 12,8 6,14"/></svg></button>
     <span id="kind-badge">—</span>
@@ -731,11 +789,13 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
 
     const navBackBtn    = document.getElementById('nav-back-btn');
     const navForwardBtn = document.getElementById('nav-forward-btn');
+    const lockBtn       = document.getElementById('lock-btn');
 
     let currentCursorLine  = 0;
     let currentDefUri      = null; // vscode URI string of the definition file
     let currentSymbolKind  = null; // last displayed symbol kind
     let pendingRenderArgs  = null; // 等待语法高亮组件加载完成后重绘
+    let isLocked           = false;
 
     // ── 前进 / 后退按钮 ─────────────────────────────────────────────────────
     navBackBtn.addEventListener('click', () => {
@@ -744,6 +804,18 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     navForwardBtn.addEventListener('click', () => {
       vscodeApi.postMessage({ type: 'navForward' });
     });
+    lockBtn.addEventListener('click', () => {
+      vscodeApi.postMessage({ type: 'toggleLock', locked: !isLocked });
+    });
+
+    function applyLockState(locked) {
+      isLocked = !!locked;
+      lockBtn.textContent = isLocked ? '🔒' : '🔓';
+      lockBtn.classList.toggle('active', isLocked);
+      lockBtn.title = isLocked
+        ? '已锁定：忽略编辑器光标更新（视图内导航仍可用）'
+        : '锁定：忽略编辑器光标更新（视图内导航仍可用）';
+    }
 
     // ── 鼠标侧键（后退=3，前进=4）──────────────────────────────────────────
     document.addEventListener('mouseup', (e) => {
@@ -816,6 +888,11 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
       if (msg.type === 'navState') {
         navBackBtn.disabled    = !msg.canBack;
         navForwardBtn.disabled = !msg.canForward;
+        return;
+      }
+
+      if (msg.type === 'lockState') {
+        applyLockState(msg.locked);
         return;
       }
 
