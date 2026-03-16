@@ -119,6 +119,10 @@ peek/
 | `setViewState(mode, direction)` | 在 `Outline` / `Graph` 间切换，并设置图形方向（`'up'` / `'down'` / `'left'` / `'right'`） |
 | `renderInstanceTabs()` | 渲染实例标签栏（标签 + 末尾 `+` 按钮） |
 | `renameInstance()` / `closeOtherInstances()` / `copyInstanceToRight()` | 标签右键菜单动作：重命名、关闭其他、复制到右侧（重命名通过 Extension 侧输入框消息往返完成） |
+| `moveOrCopyInstanceToOtherPane()` | 跨分区移动/复制实例；移动会保留实例 ID 并从源分区移除，复制会生成新实例 |
+| `showSplitContextMenu()` | 按分区数量动态控制菜单项可见性：单分区显示 split 项，多分区显示 swap/restore 项 |
+| `restoreSinglePane()` | 合并分区时自动迁移其他分区实例到保留分区，再回到单分区 |
+| `swapPanePositions()` | 交换两个分区在界面中的位置 |
 | `toggleTreeNode()` / `toggleGraphNode()` | 展开/收起统一逻辑；支持 `Ctrl+单击` 节点切换展开状态 |
 | `renderTreeList()` / `renderTreeNodeHtml()` | 渲染树形列表节点（SVG 箭头、类型徽章、名称、位置） |
 | `stripParams(name)` | 去除函数参数：`"foo(a, b)"` → `"foo"` |
@@ -145,6 +149,8 @@ peek/
 | `peekOnly` | 仅调用 `_peekView.peekLocation()` 更新 Peek View，不打开编辑器；默认用于单击 |
 | `setViewState` | 保存当前 Map 视图状态（`mode` + `direction`） |
 | `closeInstance` | 关闭实例时释放 Extension 端该实例缓存会话 |
+
+> 交互补充：分区菜单可由视图空白处或 Graph canvas 空白处右键触发；命中图形节点时不会弹出分区菜单。
 
 | 消息类型（Extension→Webview） | 说明 |
 |------|------|

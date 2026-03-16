@@ -726,6 +726,36 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       overflow: hidden;
     }
 
+    #pane-host {
+      flex: 1;
+      min-height: 0;
+      min-width: 0;
+      display: flex;
+    }
+    #pane-host.mode-single {
+      flex-direction: column;
+    }
+    #pane-host.mode-horizontal {
+      flex-direction: column;
+    }
+    #pane-host.mode-vertical {
+      flex-direction: row;
+    }
+    .pane-shell {
+      flex: 1;
+      min-height: 0;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #pane-host.mode-horizontal .pane-shell + .pane-shell {
+      border-top: 1px solid var(--vscode-panel-border, #333);
+    }
+    #pane-host.mode-vertical .pane-shell + .pane-shell {
+      border-left: 1px solid var(--vscode-panel-border, #333);
+    }
+
     #instance-tabs-bar {
       display: flex;
       align-items: center;
@@ -821,6 +851,34 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       font-size: 12px;
     }
     .instance-context-item:hover {
+      background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.08));
+    }
+
+    #split-context-menu {
+      position: fixed;
+      min-width: 160px;
+      padding: 4px;
+      border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border, #333));
+      background: var(--vscode-menu-background, var(--vscode-editorWidget-background, #252526));
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+      z-index: 1100;
+    }
+    #split-context-menu[hidden] {
+      display: none;
+    }
+    .split-context-item {
+      width: 100%;
+      height: 24px;
+      border: none;
+      border-radius: 3px;
+      background: transparent;
+      color: var(--vscode-menu-foreground, var(--vscode-foreground, #d4d4d4));
+      text-align: left;
+      padding: 0 8px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .split-context-item:hover {
       background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.08));
     }
 
@@ -1049,79 +1107,113 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       height: 100%;
       display: block;
     }
-    #graph-hint {
-      position: absolute;
-      bottom: 6px;
-      right: 10px;
-      font-size: 10px;
-      color: var(--vscode-disabledForeground, #666);
-      pointer-events: none;
-      user-select: none;
-    }
   </style>
   <!-- Dynamic theme symbol-kind colors (updated via postMessage on theme change) -->
   <style id="theme-tokens">${initialThemeCss}</style>
 </head>
 <body>
-  <div id="instance-tabs-bar">
-    <div id="instance-tabs" role="tablist" aria-label="Reference analysis instances"></div>
-  </div>
-  <div id="header">
-    <button id="search-btn" title="Analyze symbol at cursor"><span class="btn-icon">🔍</span> Analysis</button>
-    <div id="view-tabs" role="tablist" aria-label="Map View Mode">
-      <button id="view-tab-tree" class="view-tab active" role="tab" aria-selected="true" title="Outline view">Outline</button>
-      <button id="view-tab-graph" class="view-tab" role="tab" aria-selected="false" title="Graph view">Graph</button>
+  <div id="pane-host" class="mode-single"></div>
+
+  <template id="pane-template">
+    <div id="instance-tabs-bar">
+      <div id="instance-tabs" role="tablist" aria-label="Reference analysis instances"></div>
     </div>
-    <div id="graph-direction-wrap">
-      <label for="graph-direction">Direction</label>
-      <select id="graph-direction" title="Graph growth direction">
-        <option value="right">Right</option>
-        <option value="left">Left</option>
-        <option value="up">Up</option>
-        <option value="down">Down</option>
-      </select>
+    <div id="header">
+      <button id="search-btn" title="Analyze symbol at cursor"><span class="btn-icon">🔍</span> Analysis</button>
+      <div id="view-tabs" role="tablist" aria-label="Map View Mode">
+        <button id="view-tab-tree" class="view-tab active" role="tab" aria-selected="true" title="Outline view">Outline</button>
+        <button id="view-tab-graph" class="view-tab" role="tab" aria-selected="false" title="Graph view">Graph</button>
+      </div>
+      <div id="graph-direction-wrap">
+        <label for="graph-direction">Direction</label>
+        <select id="graph-direction" title="Graph growth direction">
+          <option value="right">Right</option>
+          <option value="left">Left</option>
+          <option value="up">Up</option>
+          <option value="down">Down</option>
+        </select>
+      </div>
+      <span id="header-spacer"></span>
     </div>
-    <span id="header-spacer"></span>
-  </div>
-  <div id="empty-msg">Place cursor on a symbol, then click "Analysis"</div>
-  <div id="content" style="display:none">
-    <div class="table-header">
-      <div class="col-name">Symbol</div>
-      <div class="col-file">File</div>
-      <div class="col-line">Line</div>
+    <div id="empty-msg">Place cursor on a symbol, then click "Analysis"</div>
+    <div id="content" style="display:none">
+      <div class="table-header">
+        <div class="col-name">Symbol</div>
+        <div class="col-file">File</div>
+        <div class="col-line">Line</div>
+      </div>
+      <div class="section active" id="sec-references"></div>
     </div>
-    <div class="section active" id="sec-references"></div>
-  </div>
-  <div id="graph-container">
-    <canvas id="graph-canvas"></canvas>
-    <div id="graph-hint">Click = peek · Double-click = open &amp; peek · +/- icon = expand/collapse · Scroll = pan · Shift+Scroll/tilt = pan left/right · Ctrl+Scroll = zoom · Drag = pan</div>
-  </div>
-  <div id="instance-context-menu" class="instance-context-menu" hidden>
-    <button class="instance-context-item" data-action="rename">Rename</button>
-    <button class="instance-context-item" data-action="close-others">Close Others</button>
-    <button class="instance-context-item" data-action="copy-right">Copy to Right</button>
+    <div id="graph-container">
+      <canvas id="graph-canvas"></canvas>
+    </div>
+    <div id="instance-context-menu" class="instance-context-menu" hidden>
+      <button class="instance-context-item" data-action="rename">Rename</button>
+      <button class="instance-context-item" data-action="close-others">Close Others</button>
+      <button class="instance-context-item" data-action="copy-right">Copy to Right</button>
+      <button class="instance-context-item" data-action="move-other-pane">Move to Other Pane</button>
+      <button class="instance-context-item" data-action="copy-other-pane">Copy to Other Pane</button>
+    </div>
+  </template>
+
+  <div id="split-context-menu" hidden>
+    <button class="split-context-item" data-action="split-horizontal">Split Horizontally</button>
+    <button class="split-context-item" data-action="split-vertical">Split Vertically</button>
+    <button class="split-context-item" data-action="switch-horizontal">Switch to Horizontal Split</button>
+    <button class="split-context-item" data-action="switch-vertical">Switch to Vertical Split</button>
+    <button class="split-context-item" data-action="swap-panes">Swap Pane Positions</button>
+    <button class="split-context-item" data-action="restore-single">Back to Single Pane</button>
   </div>
 
   <script nonce="${nonce}">
     const vscodeApi = acquireVsCodeApi();
     vscodeApi.postMessage({ type: 'ready' });
 
-    const emptyMsg     = document.getElementById('empty-msg');
-    const content      = document.getElementById('content');
-    const instanceTabs = document.getElementById('instance-tabs');
-    const instanceContextMenu = document.getElementById('instance-context-menu');
-    const searchBtn    = document.getElementById('search-btn');
-    const viewTabTree  = document.getElementById('view-tab-tree');
-    const viewTabGraph = document.getElementById('view-tab-graph');
-    const graphDirectionWrap = document.getElementById('graph-direction-wrap');
-    const graphDirectionSelect = document.getElementById('graph-direction');
-    const graphContainer = document.getElementById('graph-container');
-    const graphCanvas   = document.getElementById('graph-canvas');
-    const refSection    = document.getElementById('sec-references');
+    const paneHost = document.getElementById('pane-host');
+    const paneTemplate = document.getElementById('pane-template');
+    const splitContextMenu = document.getElementById('split-context-menu');
+    const splitHorizontalMenuItem = splitContextMenu.querySelector('[data-action="split-horizontal"]');
+    const splitVerticalMenuItem = splitContextMenu.querySelector('[data-action="split-vertical"]');
+    const switchHorizontalMenuItem = splitContextMenu.querySelector('[data-action="switch-horizontal"]');
+    const switchVerticalMenuItem = splitContextMenu.querySelector('[data-action="switch-vertical"]');
+    const swapPanesMenuItem = splitContextMenu.querySelector('[data-action="swap-panes"]');
+    const restoreSingleMenuItem = splitContextMenu.querySelector('[data-action="restore-single"]');
+    const paneControllers = new Map();
+    let paneIdSeed = 0;
+    let globalInstanceSeed = 0;
+    let currentSplitMode = 'single';
+    let latestThemeCss = '';
+    let latestInteractionConfig = null;
+    let latestViewState = { mode: 'tree', direction: 'right' };
+
+    function createPaneShell(paneId) {
+      const shell = document.createElement('section');
+      shell.className = 'pane-shell';
+      shell.dataset.paneId = paneId;
+      shell.appendChild(paneTemplate.content.cloneNode(true));
+      paneHost.appendChild(shell);
+      return shell;
+    }
+
+    function createPaneController(paneRoot, paneId) {
+
+    const emptyMsg     = paneRoot.querySelector('#empty-msg');
+    const content      = paneRoot.querySelector('#content');
+    const instanceTabs = paneRoot.querySelector('#instance-tabs');
+    const instanceContextMenu = paneRoot.querySelector('#instance-context-menu');
+    const moveOtherPaneMenuItem = instanceContextMenu.querySelector('[data-action="move-other-pane"]');
+    const copyOtherPaneMenuItem = instanceContextMenu.querySelector('[data-action="copy-other-pane"]');
+    const searchBtn    = paneRoot.querySelector('#search-btn');
+    const viewTabTree  = paneRoot.querySelector('#view-tab-tree');
+    const viewTabGraph = paneRoot.querySelector('#view-tab-graph');
+    const graphDirectionWrap = paneRoot.querySelector('#graph-direction-wrap');
+    const graphDirectionSelect = paneRoot.querySelector('#graph-direction');
+    const graphContainer = paneRoot.querySelector('#graph-container');
+    const graphCanvas   = paneRoot.querySelector('#graph-canvas');
+    const refSection    = paneRoot.querySelector('#sec-references');
 
     let defaultNewMode = 'tree';
     let defaultNewDirection = 'right';
-    let instanceSeed = 0;
     const instanceStateMap = new Map();
     const instanceOrder = [];
     let activeInstanceId = '';
@@ -1262,9 +1354,19 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
     function addInstance(options) {
       const opts = options || {};
-      instanceSeed += 1;
-      const id = 'inst_' + instanceSeed;
-      const title = opts.title || ('Ref ' + instanceSeed);
+      let id = opts.instanceId;
+      let title = opts.title;
+      if (!id) {
+        globalInstanceSeed += 1;
+        id = 'inst_' + globalInstanceSeed;
+        title = title || ('Ref ' + globalInstanceSeed);
+      } else {
+        title = title || id;
+      }
+      if (instanceStateMap.has(id)) {
+        activateInstance(id);
+        return id;
+      }
       const mode = normalizeViewMode(opts.mode || defaultNewMode);
       const direction = normalizeGraphDirection(opts.direction || defaultNewDirection);
       const state = createInstanceState(id, title, mode, direction);
@@ -1277,20 +1379,63 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       instanceStateMap.set(id, state);
       insertInstanceOrder(id, opts.afterInstanceId);
       activateInstance(id);
+      return id;
     }
 
-    function removeInstance(instanceId) {
+    function removeInstanceInternal(instanceId, options) {
+      const opts = options || {};
       if (!instanceStateMap.has(instanceId)) return;
-      if (instanceStateMap.size === 1) return;
+      if (instanceStateMap.size === 1 && !opts.force) return;
       const idx = instanceOrder.indexOf(instanceId);
       instanceStateMap.delete(instanceId);
       if (idx >= 0) {
         instanceOrder.splice(idx, 1);
       }
-      vscodeApi.postMessage({ type: 'closeInstance', instanceId });
+      if (!opts.skipCloseMessage) {
+        vscodeApi.postMessage({ type: 'closeInstance', instanceId });
+      }
       hideInstanceContextMenu();
+      if (instanceOrder.length === 0) {
+        addInstance();
+        return;
+      }
       const nextId = instanceOrder[idx] || instanceOrder[idx - 1] || instanceOrder[0];
       activateInstance(nextId);
+    }
+
+    function buildTransferPayload(instanceId, options) {
+      const opts = options || {};
+      const state = instanceStateMap.get(instanceId);
+      if (!state) { return null; }
+      return {
+        instanceId: opts.preserveInstanceId ? state.id : undefined,
+        title: state.title,
+        mode: state.viewMode,
+        direction: state.graphDirection,
+        fromState: {
+          loadedNodes: new Set(state.loadedNodes),
+          nodeChildrenCache: cloneNodeChildrenCache(state.nodeChildrenCache),
+          expandedNodeIds: new Set(state.expandedNodeIds),
+          lastUpdateData: cloneLastUpdateData(state.lastUpdateData),
+        },
+      };
+    }
+
+    function closeAllInstances() {
+      for (const id of instanceOrder) {
+        vscodeApi.postMessage({ type: 'closeInstance', instanceId: id });
+      }
+    }
+
+    function importTransferredInstance(payload) {
+      if (!payload) { return ''; }
+      return addInstance({
+        instanceId: payload.instanceId,
+        title: payload.title,
+        mode: payload.mode,
+        direction: payload.direction,
+        fromState: payload.fromState,
+      });
     }
 
     function closeOtherInstances(keepId) {
@@ -1340,6 +1485,13 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
 
     function showInstanceContextMenu(instanceId, clientX, clientY) {
       contextMenuInstanceId = instanceId;
+      const multiPane = paneControllers.size > 1;
+      if (moveOtherPaneMenuItem) {
+        moveOtherPaneMenuItem.style.display = multiPane ? '' : 'none';
+      }
+      if (copyOtherPaneMenuItem) {
+        copyOtherPaneMenuItem.style.display = multiPane ? '' : 'none';
+      }
       instanceContextMenu.hidden = false;
       instanceContextMenu.style.left = clientX + 'px';
       instanceContextMenu.style.top = clientY + 'px';
@@ -1361,7 +1513,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       const closeBtn = event.target.closest('.instance-tab-close');
       if (closeBtn) {
         event.stopPropagation();
-        removeInstance(closeBtn.dataset.instanceId);
+        removeInstanceInternal(closeBtn.dataset.instanceId);
         return;
       }
       const tabEl = event.target.closest('.instance-tab');
@@ -1388,6 +1540,12 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         closeOtherInstances(contextMenuInstanceId);
       } else if (action === 'copy-right') {
         copyInstanceToRight(contextMenuInstanceId);
+      } else if (action === 'move-other-pane') {
+        moveOrCopyInstanceToOtherPane(paneId, contextMenuInstanceId, true);
+        hideInstanceContextMenu();
+      } else if (action === 'copy-other-pane') {
+        moveOrCopyInstanceToOtherPane(paneId, contextMenuInstanceId, false);
+        hideInstanceContextMenu();
       }
     });
 
@@ -1476,8 +1634,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
     });
 
     // ── Messages from extension ──────────────────────────────────────────
-    window.addEventListener('message', (event) => {
-      const msg = event.data;
+    function handleMessage(msg) {
       const msgInstanceId = msg && typeof msg.instanceId === 'string' ? msg.instanceId : activeInstanceId;
 
       if (msg.type === 'empty') {
@@ -1593,7 +1750,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         }
 
         // ── Tree expand ───────────────────────────────────────────
-        const nodeEl = document.querySelector('[data-node-id="' + parentNodeId + '"]');
+        const nodeEl = paneRoot.querySelector('[data-node-id="' + parentNodeId + '"]');
         if (!nodeEl) return;
         const toggleEl = nodeEl.querySelector(':scope > .tree-row .tree-toggle');
         const childrenEl = nodeEl.querySelector(':scope > .tree-children');
@@ -1614,7 +1771,7 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
         }).join('');
         return;
       }
-    });
+    }
 
     // ── Render helpers ───────────────────────────────────────────────────
     function escapeHtml(s) {
@@ -3160,6 +3317,18 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       graphDraw();
     }, { passive: false });
 
+    graphCanvas.addEventListener('contextmenu', (e) => {
+      if (!lastUpdateData) { return; }
+      const rect = graphCanvas.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      const hit = graphHitTest(cx, cy);
+      if (hit) { return; }
+      e.preventDefault();
+      hideInstanceContextMenu();
+      showSplitContextMenu(e.clientX, e.clientY);
+    });
+
     // Click: peek in context window (single), open in editor (double), expand/collapse (+/- icon)
     graphCanvas.addEventListener('click', (e) => {
       const rect = graphCanvas.getBoundingClientRect();
@@ -3213,6 +3382,272 @@ export class MapViewProvider implements vscode.WebviewViewProvider {
       }
     });
     resizeObs.observe(graphContainer);
+
+    return {
+      paneId,
+      paneRoot,
+      hasInstance(instanceId) {
+        return instanceStateMap.has(instanceId);
+      },
+      getInstanceIds() {
+        return [...instanceOrder];
+      },
+      getTransferPayload(instanceId, options) {
+        return buildTransferPayload(instanceId, options);
+      },
+      importTransferredInstance,
+      removeInstance(instanceId, options) {
+        removeInstanceInternal(instanceId, options);
+      },
+      closeAllInstances,
+      handleMessage,
+    };
+    }
+
+    function createPaneControllerAndMount() {
+      paneIdSeed += 1;
+      const paneId = 'pane_' + paneIdSeed;
+      const shell = createPaneShell(paneId);
+      const controller = createPaneController(shell, paneId);
+      paneControllers.set(paneId, controller);
+      if (latestThemeCss) {
+        controller.handleMessage({ type: 'themeColors', css: latestThemeCss });
+      }
+      if (latestInteractionConfig) {
+        controller.handleMessage(Object.assign({ type: 'interactionConfig' }, latestInteractionConfig));
+      }
+      controller.handleMessage({
+        type: 'initViewState',
+        mode: latestViewState.mode,
+        direction: latestViewState.direction,
+      });
+      return controller;
+    }
+
+    function hideSplitContextMenu() {
+      splitContextMenu.hidden = true;
+    }
+
+    function showSplitContextMenu(clientX, clientY) {
+      const multiPane = paneControllers.size > 1;
+      const horizontal = currentSplitMode === 'horizontal';
+      if (splitHorizontalMenuItem) {
+        splitHorizontalMenuItem.style.display = multiPane ? 'none' : '';
+      }
+      if (splitVerticalMenuItem) {
+        splitVerticalMenuItem.style.display = multiPane ? 'none' : '';
+      }
+      if (switchHorizontalMenuItem) {
+        switchHorizontalMenuItem.style.display = multiPane && !horizontal ? '' : 'none';
+      }
+      if (switchVerticalMenuItem) {
+        switchVerticalMenuItem.style.display = multiPane && horizontal ? '' : 'none';
+      }
+      if (swapPanesMenuItem) {
+        swapPanesMenuItem.style.display = multiPane ? '' : 'none';
+      }
+      if (restoreSingleMenuItem) {
+        restoreSingleMenuItem.style.display = multiPane ? '' : 'none';
+      }
+      splitContextMenu.hidden = false;
+      splitContextMenu.style.left = clientX + 'px';
+      splitContextMenu.style.top = clientY + 'px';
+      const rect = splitContextMenu.getBoundingClientRect();
+      const maxX = window.innerWidth - rect.width - 4;
+      const maxY = window.innerHeight - rect.height - 4;
+      splitContextMenu.style.left = Math.max(4, Math.min(clientX, maxX)) + 'px';
+      splitContextMenu.style.top = Math.max(4, Math.min(clientY, maxY)) + 'px';
+    }
+
+    function ensureSecondPane() {
+      if (paneControllers.size >= 2) { return; }
+      createPaneControllerAndMount();
+    }
+
+    function getOtherPaneController(sourcePaneId, options) {
+      const opts = options || {};
+      if (opts.ensurePane) {
+        ensureSecondPane();
+      }
+      for (const pane of paneControllers.values()) {
+        if (pane.paneId !== sourcePaneId) {
+          return pane;
+        }
+      }
+      return null;
+    }
+
+    function moveOrCopyInstanceToOtherPane(sourcePaneId, instanceId, isMove) {
+      const sourcePane = paneControllers.get(sourcePaneId);
+      if (!sourcePane || !instanceId) { return; }
+      const wasSinglePane = paneControllers.size <= 1;
+      const targetPane = getOtherPaneController(sourcePaneId, { ensurePane: true });
+      if (!targetPane) { return; }
+      if (wasSinglePane) {
+        setSplitMode('vertical');
+      }
+
+      const payload = sourcePane.getTransferPayload(instanceId, { preserveInstanceId: isMove });
+      if (!payload) { return; }
+      if (!isMove) {
+        payload.title = payload.title + ' Copy';
+      }
+      targetPane.importTransferredInstance(payload);
+
+      if (isMove) {
+        sourcePane.removeInstance(instanceId, {
+          force: true,
+          skipCloseMessage: true,
+        });
+      }
+    }
+
+    function setSplitMode(mode) {
+      currentSplitMode = mode === 'horizontal' || mode === 'vertical' ? mode : 'single';
+      paneHost.classList.remove('mode-single', 'mode-horizontal', 'mode-vertical');
+      if (currentSplitMode === 'horizontal') {
+        paneHost.classList.add('mode-horizontal');
+      } else if (currentSplitMode === 'vertical') {
+        paneHost.classList.add('mode-vertical');
+      } else {
+        paneHost.classList.add('mode-single');
+      }
+    }
+
+    function swapPanePositions() {
+      const shells = paneHost.querySelectorAll('.pane-shell');
+      if (shells.length < 2) { return; }
+      paneHost.insertBefore(shells[1], shells[0]);
+    }
+
+    function restoreSinglePane() {
+      if (paneControllers.size <= 1) {
+        setSplitMode('single');
+        return;
+      }
+      const panes = [...paneControllers.values()];
+      const keeper = panes[0];
+      for (let i = 1; i < panes.length; i += 1) {
+        const pane = panes[i];
+        const ids = pane.getInstanceIds();
+        for (const id of ids) {
+          const payload = pane.getTransferPayload(id, { preserveInstanceId: true });
+          if (payload) {
+            keeper.importTransferredInstance(payload);
+          }
+        }
+        pane.paneRoot.remove();
+        paneControllers.delete(pane.paneId);
+      }
+      if (keeper && !paneHost.contains(keeper.paneRoot)) {
+        paneHost.appendChild(keeper.paneRoot);
+      }
+      setSplitMode('single');
+    }
+
+    createPaneControllerAndMount();
+    setSplitMode('single');
+
+    window.addEventListener('message', (event) => {
+      const msg = event.data;
+      if (!msg || !msg.type) { return; }
+
+      if (msg.type === 'themeColors') {
+        latestThemeCss = String(msg.css || '');
+        for (const pane of paneControllers.values()) {
+          pane.handleMessage(msg);
+        }
+        return;
+      }
+
+      if (msg.type === 'interactionConfig') {
+        latestInteractionConfig = {
+          wheelPanSensitivity: msg.wheelPanSensitivity,
+          wheelTiltPanSensitivity: msg.wheelTiltPanSensitivity,
+          singleClickAction: msg.singleClickAction,
+        };
+        for (const pane of paneControllers.values()) {
+          pane.handleMessage(msg);
+        }
+        return;
+      }
+
+      if (msg.type === 'initViewState') {
+        latestViewState = {
+          mode: msg.mode === 'graph' ? 'graph' : 'tree',
+          direction: msg.direction === 'left' || msg.direction === 'right' || msg.direction === 'up' || msg.direction === 'down'
+            ? msg.direction
+            : 'right',
+        };
+        for (const pane of paneControllers.values()) {
+          pane.handleMessage(msg);
+        }
+        return;
+      }
+
+      if (typeof msg.instanceId === 'string' && msg.instanceId) {
+        for (const pane of paneControllers.values()) {
+          if (pane.hasInstance(msg.instanceId)) {
+            pane.handleMessage(msg);
+            return;
+          }
+        }
+      }
+
+      const firstPane = paneControllers.values().next().value;
+      if (firstPane) {
+        firstPane.handleMessage(msg);
+      }
+    });
+
+    document.addEventListener('contextmenu', (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) { return; }
+      if (target.closest('.instance-tab, .instance-tab-close, .instance-context-menu, .instance-context-item, .tree-row, .tree-toggle, canvas, button, select, input, textarea')) {
+        return;
+      }
+      event.preventDefault();
+      showSplitContextMenu(event.clientX, event.clientY);
+    });
+
+    splitContextMenu.addEventListener('click', (event) => {
+      if (!(event.target instanceof Element)) { return; }
+      const item = event.target.closest('.split-context-item');
+      if (!item) { return; }
+      const action = item.dataset.action;
+      if (action === 'split-horizontal') {
+        ensureSecondPane();
+        setSplitMode('horizontal');
+      } else if (action === 'split-vertical') {
+        ensureSecondPane();
+        setSplitMode('vertical');
+      } else if (action === 'switch-horizontal') {
+        setSplitMode('horizontal');
+      } else if (action === 'switch-vertical') {
+        setSplitMode('vertical');
+      } else if (action === 'swap-panes') {
+        swapPanePositions();
+      } else if (action === 'restore-single') {
+        restoreSinglePane();
+      }
+      hideSplitContextMenu();
+    });
+
+    document.addEventListener('click', (event) => {
+      if (splitContextMenu.hidden) { return; }
+      if (!(event.target instanceof Element)) { return; }
+      if (!event.target.closest('#split-context-menu')) {
+        hideSplitContextMenu();
+      }
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        hideSplitContextMenu();
+      }
+    });
+
+    window.addEventListener('blur', hideSplitContextMenu);
   </script>
 </body>
 </html>`;

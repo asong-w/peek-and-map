@@ -38,7 +38,8 @@
 | ---- | ---- |
 | **双模式视图切换** | 使用 `Outline` / `Graph` 标签切换视图；`Graph` 模式支持方向选择（`Right` / `Left` / `Up` / `Down`）。 |
 | **多实例标签分析** | 顶部支持多实例标签并行分析；每个标签独立维护分析结果、展开状态、`Outline/Graph` 视图和 `Direction` 方向。 `+` 按钮始终跟在最后一个标签后。 |
-| **实例标签右键菜单** | 在实例标签上右键可执行：`Rename`、`Close Others`、`Copy to Right`（复制当前实例到右侧新标签并保留其状态与数据）；`Rename` 使用 VS Code 输入框完成重命名。 |
+| **实例标签右键菜单** | 在实例标签上右键可执行：`Rename`、`Close Others`、`Copy to Right`；分区模式下额外支持 `Move to Other Pane`、`Copy to Other Pane`。单分区时会自动隐藏跨分区项。`Rename` 使用 VS Code 输入框完成重命名。 |
+| **分区右键菜单** | 在视图空白区域（含 Graph canvas 空白区）右键可打开分区菜单：单分区时显示 `Split Horizontally` / `Split Vertically`；双分区时显示 `Swap Pane Positions` / `Back to Single Pane`。执行 `Back to Single Pane` 时会自动合并两个分区的实例标签到同一分区。 |
 | **引用分析** | 在编辑器中选中符号，点击「Analysis」按钮后，展示当前符号的引用情况，按符号去重；递归展开时按“当前路径”去重，避免同一路径中重复出现已访问节点（防止无线套娃）。 |
 | **声明/定义规则** | 当分析目标是函数声明时，会过滤“该声明被其对应定义引用”的回跳关系；声明仍可被其他函数正常引用并展开。 |
 | **根节点入图/入树** | 当前分析符号不再显示在顶栏，而是直接作为根节点显示在树形与图形视图中，交互与其他节点一致。 |
