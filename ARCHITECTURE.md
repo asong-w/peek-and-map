@@ -103,9 +103,10 @@ peek/
 | `setPeekView(pv)` | 注入 `PeekViewProvider` 引用，用于点击节点时直接更新预览 |
 | `_saveViewState(mode, direction)` | 持久化视图模式与图形方向到 `workspaceState` |
 | `pushInteractionConfig()` | 将 Map 图形视图交互配置推送到 webview（滚动/拨动灵敏度 + 单击行为） |
-| `_doSearch(instanceId)` | 按钮触发：按实例分析光标所在符号的引用 |
+| `_doSearch(instanceId, includeGlob, excludeGlob)` | 按钮触发：按实例分析光标所在符号的引用，并记录 include/exclude 文件过滤条件 |
 | `_resolveReferencingSymbols()` | 查找引用并定位其所在的封闭符号，构建引用树；包含路径去重（防止同一路径回环）以及“声明不被其定义回引”过滤规则 |
 | `_expandRef(instanceId, nodeId)` | 按实例展开引用节点，递归加载子引用 |
+| `_passesFileFilter(uri, includeGlob, excludeGlob)` | 依据 include/exclude glob 过滤引用所在文件（同时作用于首层与递归展开） |
 | `_getDocumentSymbols()` | 获取文档符号列表 |
 | `_deepestContaining()` | 递归查找最内层包含指定位置的符号 |
 | `_getHtml()` | 返回 Map View 的 webview HTML/CSS/JS |
@@ -117,6 +118,7 @@ peek/
 | 函数 | 说明 |
 |------|------|
 | `setViewState(mode, direction)` | 在 `Outline` / `Graph` 间切换，并设置图形方向（`'up'` / `'down'` / `'left'` / `'right'`） |
+| `applyFileFilterUi(expanded)` | 切换 `Files ▸/▾` 过滤区域显隐，并同步按钮状态 |
 | `renderInstanceTabs()` | 渲染实例标签栏（标签 + 末尾 `+` 按钮） |
 | `renameInstance()` / `closeOtherInstances()` / `copyInstanceToRight()` | 标签右键菜单动作：重命名、关闭其他、复制到右侧（重命名通过 Extension 侧输入框消息往返完成） |
 | `moveOrCopyInstanceToOtherPane()` | 跨分区移动/复制实例；移动会保留实例 ID 并从源分区移除，复制会生成新实例 |
@@ -136,13 +138,15 @@ peek/
 | `graphHandleChildren()` | 处理扩展后返回的子节点，更新图形 |
 | `graphCollapse(node)` | 递归移除当前图中的后代节点，并保留后代展开状态以便重新展开时恢复 |
 
+> 补充：Map View Header 中新增 `Files ▸` 控件；默认收起，展开后显示 `files to include` 与 `files to exclude` 两个输入框，支持逗号分隔多个 glob。
+
 > 图形文本补充：在垂直方向（`up/down`）下，若节点名为限定名（如 `Class::method`），节点内符号会改为两行渲染：第一行 `Class::`，第二行 `method`。
 
 #### 消息类型
 
 | 消息类型（Webview→Extension） | 说明 |
 |------|------|
-| `search` | 触发符号分析（携带 `instanceId`） |
+| `search` | 触发符号分析（携带 `instanceId`、`includeGlob`、`excludeGlob`） |
 | `expandRef` | 展开树/图节点（携带 `instanceId`） |
 | `requestRenameInstance` | 请求 Extension 弹出输入框并重命名实例（携带 `instanceId` 与当前标题） |
 | `jumpTo` | 打开编辑器并定位（`preserveFocus: false`），同时通过 `peekLocation()` 更新 Peek View；默认用于双击，也可由 `mapView.singleClickAction` 用于单击 |
