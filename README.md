@@ -104,13 +104,12 @@ TypeScript · JavaScript · TSX · JSX · Python · Java · C · C++ · C# · Go
 ## 已知限制
 
 - 需要对应语言的扩展提供 `DocumentSymbolProvider`。纯文本文件或小众语言会显示「当前语言暂不支持符号解析」。
-- 主题配色映射基于 TextMate scope → Prism token 的静态映射表，极少数自定义 scope 可能无法覆盖，此时回退到编辑器前景色。
+- 主题配色映射基于 TextMate scope → Prism token 的静态映射表，可能无法完美跟随编辑器主题。
 
 ---
 
 ## TODO
 
-- map 视图考虑不再根据编辑器主题变化，只提供视觉效果较好的明亮/黑暗两套配色。
 
 ---
 
