@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { LANG_MAP } from './constants';
-import { ContextInfo } from './types';
+import { ContextInfo, PeekContextBundle } from './types';
 import { getNonce } from './utils';
 import { buildKindIconFunction, getThemeColorsCss, symbolKindToName } from './viewCommon';
 
@@ -23,7 +23,7 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
   // ── Navigation history ring (back / forward) ─────────────────────────────
   // New entries are always appended by cursor-driven updates and in-view jumps.
   // When capacity is reached, the oldest entry is overwritten (ring semantics).
-  private _navHistoryRing: ContextInfo[] = [];
+  private _navHistoryRing: PeekContextBundle[] = [];
   private _navHistoryIndex = -1;
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
@@ -123,19 +123,9 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
               clickUri,
               clickPos
             );
-            if (defs && defs.length > 0) {
-              const loc   = defs[0];
-              const isLink = 'targetUri' in loc;
-              const defUri  = isLink
-                ? (loc as vscode.LocationLink).targetUri
-                : (loc as vscode.Location).uri;
-              const defRange = isLink
-                ? ((loc as vscode.LocationLink).targetSelectionRange ?? (loc as vscode.LocationLink).targetRange)
-                : (loc as vscode.Location).range;
-              const ctx = await this._getContextFromLocation(defUri, defRange.start);
-              if (ctx) {
-                this._appendCurrentContext(ctx);
-              }
+            const bundle = await this._resolveDefinitionBundle(defs ?? []);
+            if (bundle) {
+              this._appendCurrentBundle(bundle);
             }
           } catch { /* no provider */ }
           break;
@@ -213,18 +203,9 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     }
 
     if (defLocations.length > 0) {
-      const loc = defLocations[0];
-      const isLink = 'targetUri' in loc;
-      const defUri  = isLink ? (loc as vscode.LocationLink).targetUri  : (loc as vscode.Location).uri;
-      // Prefer targetSelectionRange (tighter), fall back to targetRange / range
-      const defRange = isLink
-        ? ((loc as vscode.LocationLink).targetSelectionRange ?? (loc as vscode.LocationLink).targetRange)
-        : (loc as vscode.Location).range;
-      const defPos = defRange.start;
-
-      const ctx = await this._getContextFromLocation(defUri, defPos);
-      if (ctx) {
-        this._appendCurrentContext(ctx);
+      const bundle = await this._resolveDefinitionBundle(defLocations);
+      if (bundle) {
+        this._appendCurrentBundle(bundle);
         return;
       }
     }
@@ -480,8 +461,43 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     this._view.webview.postMessage({ type: 'lockState', locked: this._isLocked });
   }
 
+  private async _resolveDefinitionBundle(defs: Array<vscode.Location | vscode.LocationLink>): Promise<PeekContextBundle | null> {
+    const contexts: ContextInfo[] = [];
+    const seen = new Set<string>();
+
+    for (const loc of defs) {
+      const isLink = 'targetUri' in loc;
+      const defUri = isLink ? (loc as vscode.LocationLink).targetUri : (loc as vscode.Location).uri;
+      // Prefer targetSelectionRange (tighter), fall back to targetRange / range.
+      const defRange = isLink
+        ? ((loc as vscode.LocationLink).targetSelectionRange ?? (loc as vscode.LocationLink).targetRange)
+        : (loc as vscode.Location).range;
+      if (!defRange) { continue; }
+
+      const key = `${defUri.toString()}|${defRange.start.line}:${defRange.start.character}`;
+      if (seen.has(key)) { continue; }
+      seen.add(key);
+
+      const ctx = await this._getContextFromLocation(defUri, defRange.start);
+      if (ctx) {
+        contexts.push(ctx);
+      }
+    }
+
+    if (contexts.length === 0) {
+      return null;
+    }
+    return { contexts, selectedIndex: 0 };
+  }
+
   private _appendCurrentContext(next: ContextInfo): void {
+    this._appendCurrentBundle({ contexts: [next], selectedIndex: 0 });
+  }
+
+  private _appendCurrentBundle(next: PeekContextBundle): void {
     if (!this._view) { return; }
+
+    const normalized = this._normalizeBundle(next);
 
     // If we are currently in the middle of history (after going back),
     // appending a new entry starts a new branch and drops forward entries.
@@ -491,15 +507,15 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
 
     const limit = this._historyCacheLimit();
     if (this._navHistoryRing.length < limit) {
-      this._navHistoryRing.push(next);
+      this._navHistoryRing.push(normalized);
     } else {
       // Ring behavior: full capacity -> overwrite the oldest entry.
       this._navHistoryRing.shift();
-      this._navHistoryRing.push(next);
+      this._navHistoryRing.push(normalized);
     }
 
     this._navHistoryIndex = this._navHistoryRing.length - 1;
-    this._view.webview.postMessage({ type: 'update', data: next });
+    this._view.webview.postMessage({ type: 'update', data: normalized });
     this._sendNavState();
   }
 
@@ -515,6 +531,14 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     const entry = this._navHistoryRing[this._navHistoryIndex];
     this._view.webview.postMessage({ type: 'update', data: entry });
     this._sendNavState();
+  }
+
+  private _normalizeBundle(bundle: PeekContextBundle): PeekContextBundle {
+    const contexts = bundle.contexts.filter(Boolean);
+    const selectedIndex = contexts.length === 0
+      ? 0
+      : Math.max(0, Math.min(bundle.selectedIndex ?? 0, contexts.length - 1));
+    return { contexts, selectedIndex };
   }
 
   private _trimHistoryToLimit(): void {
@@ -678,14 +702,138 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
       display: flex;
       align-items: center;
       justify-content: center;
-      height: 100%;
+      flex: 1;
+      min-height: 0;
       color: var(--vscode-disabledForeground, #858585);
       font-size: 12px;
       font-style: italic;
     }
 
+    #main {
+      flex: 1;
+      min-height: 0;
+      display: none;
+      width: 100%;
+    }
+
+    #definition-list {
+      width: 260px;
+      flex-shrink: 0;
+      min-width: 220px;
+      max-width: 360px;
+      border-right: 1px solid var(--vscode-panel-border, #333);
+      background: var(--vscode-sideBar-background, var(--vscode-panel-background, #1e1e1e));
+      overflow: hidden;
+      display: none;
+      flex-direction: column;
+    }
+
+    #definition-splitter {
+      width: 6px;
+      flex-shrink: 0;
+      display: none;
+      cursor: col-resize;
+      background: transparent;
+      position: relative;
+      user-select: none;
+      touch-action: none;
+    }
+
+    #definition-splitter::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 50%;
+      width: 1px;
+      transform: translateX(-50%);
+      background: transparent;
+    }
+
+    #definition-splitter:hover::before,
+    body.dragging-splitter #definition-splitter::before {
+      background: var(--vscode-focusBorder, #007acc);
+    }
+
+    .def-list-title {
+      padding: 8px 10px 6px;
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground, #858585);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      user-select: none;
+      flex-shrink: 0;
+    }
+
+    .def-list-items {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 0 0 6px;
+    }
+
+    .def-item {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 8px 10px;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      color: var(--vscode-foreground, #d4d4d4);
+      text-align: left;
+      cursor: pointer;
+      outline: none;
+      border-left: 3px solid transparent;
+      transition: background 0.12s, border-color 0.12s;
+    }
+
+    .def-item:hover {
+      background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.06));
+    }
+
+    .def-item.selected {
+      background: var(--vscode-list-activeSelectionBackground, rgba(0, 122, 204, 0.28));
+      border-left-color: var(--vscode-focusBorder, #007acc);
+    }
+
+    .def-item:focus-visible {
+      box-shadow: inset 0 0 0 1px var(--vscode-focusBorder, #007acc);
+    }
+
+    .def-item-main {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .def-item-symbol {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 600;
+    }
+
+    .def-item-kind {
+      flex-shrink: 0;
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground, #858585);
+    }
+
+    .def-item-detail {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground, #858585);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     #code-container {
       flex: 1;
+      min-width: 0;
       overflow: auto;
       font-size: var(--ctx-font-size, inherit);
     }
@@ -762,7 +910,11 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     <span id="file-name"></span>
   </div>
   <div id="empty-msg">初始化中...</div>
-  <div id="code-container" style="display:none"></div>
+  <div id="main">
+    <aside id="definition-list" aria-label="定义候选列表"></aside>
+    <div id="definition-splitter" role="separator" aria-orientation="vertical" aria-label="调整定义列表宽度"></div>
+    <div id="code-container"></div>
+  </div>
 
   <!-- Prism 全部来自本地 media/ 目录，无需网络 -->
   <script nonce="${nonce}" src="${prismJs}"></script>
@@ -785,6 +937,9 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     const kindBadge     = document.getElementById('kind-badge');
     const symbolNameEl  = document.getElementById('symbol-name');
     const emptyMsg      = document.getElementById('empty-msg');
+    const mainPane      = document.getElementById('main');
+    const definitionList = document.getElementById('definition-list');
+    const definitionSplitter = document.getElementById('definition-splitter');
     const codeContainer = document.getElementById('code-container');
 
     const navBackBtn    = document.getElementById('nav-back-btn');
@@ -794,8 +949,24 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     let currentCursorLine  = 0;
     let currentDefUri      = null; // vscode URI string of the definition file
     let currentSymbolKind  = null; // last displayed symbol kind
+    let currentContexts    = [];
+    let currentSelectedIndex = 0;
+    let definitionListWidth = 260;
+    let isDraggingSplitter = false;
     let pendingRenderArgs  = null; // 等待语法高亮组件加载完成后重绘
     let isLocked           = false;
+
+    const SPLITTER_MIN_WIDTH = 220;
+    const SPLITTER_MAX_WIDTH = 360;
+
+    const savedState = vscodeApi.getState() || {};
+    if (Number.isFinite(savedState.definitionListWidth)) {
+      definitionListWidth = Math.max(
+        SPLITTER_MIN_WIDTH,
+        Math.min(SPLITTER_MAX_WIDTH, Math.floor(savedState.definitionListWidth))
+      );
+      definitionList.style.width = definitionListWidth + 'px';
+    }
 
     // ── 前进 / 后退按钮 ─────────────────────────────────────────────────────
     navBackBtn.addEventListener('click', () => {
@@ -806,6 +977,57 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     });
     lockBtn.addEventListener('click', () => {
       vscodeApi.postMessage({ type: 'toggleLock', locked: !isLocked });
+    });
+
+    definitionSplitter.addEventListener('pointerdown', (e) => {
+      if (currentContexts.length <= 1) { return; }
+      isDraggingSplitter = true;
+      document.body.classList.add('dragging-splitter');
+      definitionSplitter.setPointerCapture?.(e.pointerId);
+      e.preventDefault();
+    });
+
+    document.addEventListener('pointermove', (e) => {
+      if (!isDraggingSplitter) { return; }
+      const mainRect = mainPane.getBoundingClientRect();
+      const nextWidth = Math.max(
+        SPLITTER_MIN_WIDTH,
+        Math.min(SPLITTER_MAX_WIDTH, Math.round(e.clientX - mainRect.left))
+      );
+      definitionListWidth = nextWidth;
+      definitionList.style.width = nextWidth + 'px';
+      vscodeApi.setState({ ...(vscodeApi.getState() || {}), definitionListWidth: nextWidth, fontSize: (vscodeApi.getState() || {}).fontSize });
+    });
+
+    document.addEventListener('pointerup', () => {
+      if (!isDraggingSplitter) { return; }
+      isDraggingSplitter = false;
+      document.body.classList.remove('dragging-splitter');
+    });
+
+    document.addEventListener('pointercancel', () => {
+      if (!isDraggingSplitter) { return; }
+      isDraggingSplitter = false;
+      document.body.classList.remove('dragging-splitter');
+    });
+
+    definitionList.addEventListener('keydown', (e) => {
+      if (currentContexts.length <= 1) { return; }
+      let nextIndex = currentSelectedIndex;
+      if (e.key === 'ArrowDown') {
+        nextIndex += 1;
+      } else if (e.key === 'ArrowUp') {
+        nextIndex -= 1;
+      } else if (e.key === 'Home') {
+        nextIndex = 0;
+      } else if (e.key === 'End') {
+        nextIndex = currentContexts.length - 1;
+      } else {
+        return;
+      }
+
+      e.preventDefault();
+      selectDefinition(nextIndex, true);
     });
 
     function applyLockState(locked) {
@@ -862,6 +1084,95 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
         + '<span style="color:' + memberColor + '">' + escapeHtml(part.member) + '</span>';
     }
 
+    function normalizeBundle(data) {
+      const contexts = Array.isArray(data && data.contexts) ? data.contexts : [];
+      const selectedIndex = contexts.length === 0
+        ? 0
+        : Math.max(0, Math.min(Number.isInteger(data && data.selectedIndex) ? data.selectedIndex : 0, contexts.length - 1));
+      return { contexts, selectedIndex };
+    }
+
+    function renderDefinitionList() {
+      const count = currentContexts.length;
+      if (count <= 1) {
+        definitionList.style.display = 'none';
+        definitionSplitter.style.display = 'none';
+        definitionList.innerHTML = '';
+        return;
+      }
+
+      definitionList.style.display = 'flex';
+      definitionSplitter.style.display = 'block';
+      const items = currentContexts.map((ctx, index) => {
+        const selected = index === currentSelectedIndex;
+        const fileLabel = ctx.fileName ? ctx.fileName : 'unknown';
+        const lineLabel = (ctx.cursorLine + 1);
+        const symbolKind = ctx.symbolKind ? ctx.symbolKind : 'Symbol';
+        const title = escapeHtml(ctx.symbolName || fileLabel);
+        const detail = escapeHtml(fileLabel + ':' + lineLabel);
+        return '<button type="button" class="def-item' + (selected ? ' selected' : '') + '" data-index="' + index + '" role="option" aria-selected="' + (selected ? 'true' : 'false') + '">' +
+          '<div class="def-item-main"><span class="def-item-kind">' + escapeHtml(kindSymbol(symbolKind)) + '</span><span class="def-item-symbol">' + title + '</span></div>' +
+          '<div class="def-item-detail">' + detail + '</div>' +
+        '</button>';
+      }).join('');
+
+      definitionList.innerHTML = '<div class="def-list-title">多个定义</div><div class="def-list-items" role="listbox" aria-label="定义候选列表">' + items + '</div>';
+
+      definitionList.querySelectorAll('.def-item').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          selectDefinition(parseInt(btn.dataset.index, 10), true);
+        });
+      });
+    }
+
+    function renderCurrentContext() {
+      const ctx = currentContexts[currentSelectedIndex];
+      if (!ctx) { return; }
+
+      currentCursorLine = ctx.cursorLine;
+      currentDefUri     = ctx.defUri || null;
+
+      kindBadge.textContent = kindSymbol(ctx.symbolKind);
+      symbolNameEl.innerHTML = renderHeaderSymbolName(ctx.symbolName, ctx.symbolKind);
+      currentSymbolKind = ctx.symbolKind;
+      applyKindColors(ctx.symbolKind);
+      document.getElementById('file-name').textContent = ctx.fileName ? '  ' + ctx.fileName + ':' + (ctx.cursorLine + 1) : '';
+
+      renderCode(ctx.code, ctx.language, ctx.startLine, ctx.cursorLine);
+      refreshDefinitionListSelection();
+    }
+
+    function refreshDefinitionListSelection() {
+      definitionList.querySelectorAll('.def-item').forEach((btn) => {
+        const active = parseInt(btn.dataset.index, 10) === currentSelectedIndex;
+        btn.classList.toggle('selected', active);
+        btn.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+    }
+
+    function selectDefinition(index, focusItem) {
+      if (!currentContexts.length) { return; }
+      const nextIndex = Math.max(0, Math.min(index, currentContexts.length - 1));
+      if (nextIndex === currentSelectedIndex) {
+        if (focusItem) { focusDefinitionItem(nextIndex); }
+        return;
+      }
+
+      currentSelectedIndex = nextIndex;
+      renderCurrentContext();
+      renderDefinitionList();
+      if (focusItem) {
+        focusDefinitionItem(nextIndex);
+      }
+    }
+
+    function focusDefinitionItem(index) {
+      const btn = definitionList.querySelector('.def-item[data-index="' + index + '"]');
+      if (btn) {
+        btn.focus({ preventScroll: true });
+      }
+    }
+
     // ── 接收来自扩展的消息 ────────────────────────────────────────────────────
     window.addEventListener('message', (event) => {
       const msg = event.data;
@@ -869,13 +1180,18 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
       if (msg.type === 'empty') {
         emptyMsg.textContent        = msg.message;
         emptyMsg.style.display      = 'flex';
-        codeContainer.style.display = 'none';
+        mainPane.style.display      = 'none';
+        definitionList.innerHTML    = '';
+        definitionList.style.display = 'none';
+        definitionSplitter.style.display = 'none';
         kindBadge.textContent            = '—';
         kindBadge.style.color           = '';
         symbolNameEl.textContent        = 'Peek View';
         symbolNameEl.style.color    = '';
         currentSymbolKind           = null;
         document.getElementById('file-name').textContent = '';
+        currentContexts = [];
+        currentSelectedIndex = 0;
         return;
       }
 
@@ -897,20 +1213,13 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
       }
 
       if (msg.type === 'update') {
-        const { code, language, startLine, cursorLine,
-                symbolName, symbolKind, fileName, defUri } = msg.data;
-        currentCursorLine = cursorLine;
-        currentDefUri     = defUri || null;
-
-        kindBadge.textContent    = kindSymbol(symbolKind);
-        symbolNameEl.innerHTML = renderHeaderSymbolName(symbolName, symbolKind);
-        currentSymbolKind = symbolKind;
-        applyKindColors(symbolKind);
-        document.getElementById('file-name').textContent = fileName ? '  ' + fileName + ':' + (cursorLine + 1) : '';
-        emptyMsg.style.display      = 'none';
-        codeContainer.style.display = 'block';
-
-        renderCode(code, language, startLine, cursorLine);
+        const bundle = normalizeBundle(msg.data);
+        currentContexts = bundle.contexts;
+        currentSelectedIndex = bundle.selectedIndex;
+        emptyMsg.style.display = 'none';
+        mainPane.style.display = 'flex';
+        renderDefinitionList();
+        renderCurrentContext();
       }
     });
 

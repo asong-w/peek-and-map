@@ -13,15 +13,16 @@ VS Code 编辑器                扩展宿主                              Webvi
                               │       update()
                               │          │
                               │   executeDefinitionProvider         ◀── 语言服务器
-                              │   （获取光标处符号的定义位置）
+                              │   （获取光标处符号的定义位置，可能返回多个候选）
                               │          │
                               │    ┌─ 找到定义 ──────────────────┐
                               │    │                              │
-                              │    │  _getContextFromLocation()   │
-                              │    │  打开定义文件，查询符号树     │
-                              │    │  构造 ContextInfo            │
+                              │    │  _resolveDefinitionBundle()   │
+                              │    │  打开所有候选定义文件         │
+                              │    │  构造 PeekContextBundle       │
                               │    │          │                   │
-                              │    │  postMessage({type:'update'})──────▶ renderCode()
+                              │    │  postMessage({type:'update'})──────▶ renderDefinitionList()
+                              │    │                                      renderCode()
                               │    │                                      Prism.highlight()
                               │    └──────────────────────────────┘       构建 <table>
                               │                                            滚动到视图中央
@@ -37,6 +38,10 @@ Webview 交互                  扩展宿主
 点击 ↗ 按钮   ──消息──▶       ▼
                           openTextDocument(uri)  → 跨文件打开
                           showTextDocument()     → 定位到对应行
+
+候选列表点击    ──本地交互─▶  选择对应定义候选并立即刷新右侧预览
+方向键/Home/End ─本地交互─▶  在多个定义候选间切换
+拖动分隔条      ──本地交互─▶  调整左侧候选列表宽度并持久化到 webview state
 
 Ctrl+点击符号  ──消息──▶  onDidReceiveMessage({ type:'ctrlClick', line, character, uri })
                               │  executeDefinitionProvider → _getContextFromLocation()
@@ -119,9 +124,11 @@ generateThemeTokenCss()
 
 webview 的内联脚本在 DOM 解析完成后**同步执行**，第一行就向扩展发送 `{ type: 'ready' }`，扩展收到后立即触发 `pushThemeColors()` + `update()`。不等待任何外部资源（无 CDN）。
 
-**2. Definition Provider 驱动 + 无定义时保持不变**
+**2. Definition Provider 驱动 + 多定义候选列表 + 无定义时保持不变**
 
 `update()` 调用 `executeDefinitionProvider`，获取光标处标识符的定义位置（可能在完全不同的文件）。找到后调用 `_getContextFromLocation()` 打开定义文件并展示定义体。若光标处没有可解析的定义（空白、注释、语言无 provider），面板**保持上次内容不变**，避免频繁清空或闪烁。
+
+如果语言服务返回多个定义结果，扩展会逐个解析为 `ContextInfo`，并以 `PeekContextBundle` 的形式发送给 webview。Peek 左侧候选列表支持鼠标点击与 `↑/↓/Home/End` 键切换，右侧预览会同步更新。
 
 **3. Ctrl+点击视图内跳转 + 前进后退导航（环形历史）+ 锁定跟随**
 
@@ -163,6 +170,10 @@ prism.js、主题 CSS 和所有语言组件均存放在 `media/` 目录，通过
 **12. Ctrl+滚轮缩放字体（保持区域不变）**
 
 按住 Ctrl 并滚动鼠标滚轮可调整面板字体大小（8–40px，每次 ±1px）。缩放时会按新旧字体大小比例调整 `scrollTop`，保持当前窗口可见的第一行不变。字体大小通过 `vscodeApi.setState()` 持久化，面板重新显示时自动恢复。
+
+**12a. 定义候选列表分隔条拖动与状态持久化**
+
+当 Peek 视图左侧出现多个定义候选时，候选列表与代码预览之间显示一个可拖动的竖向分隔条。拖动时会实时更新候选列表宽度，并将宽度写入 webview state；重新打开 Peek 视图后会恢复上次宽度。
 
 **13. Map View 引用树去重与回环抑制**
 

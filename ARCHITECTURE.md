@@ -5,7 +5,7 @@ peek/
 ├── src/
 │   ├── extension.ts          # 扩展入口：activate/deactivate、事件注册
 │   ├── constants.ts          # 常量：语言映射表、Prism→TextMate scope 映射表
-│   ├── types.ts              # 共享接口：ContextInfo、TreeNodeData、TokenColorRule
+│   ├── types.ts              # 共享接口：ContextInfo、PeekContextBundle、TreeNodeData、TokenColorRule
 │   ├── theme.ts              # 主题颜色提取：JSONC 解析、主题文件加载、CSS 生成
 │   ├── viewCommon.ts         # 三视图共享逻辑：主题样式、SymbolKind 名称、emoji 映射
 │   ├── utils.ts              # 通用工具函数（getNonce 等）
@@ -83,8 +83,9 @@ peek/
 | `notifyEditorChange()` | 外部调用：记录最后已知编辑器并触发更新（锁定时忽略编辑器驱动刷新） |
 | `pushThemeColors()` | 将主题 token CSS 推送到 webview |
 | `resolveWebviewView()` | 注册面板、设置消息总线 |
-| `update()` | 核心：definition provider → 符号树 → webview |
+| `update()` | 核心：definition provider → 多定义候选解析 → 符号树 → webview |
 | `_sendLockState()` | 将 Peek 锁定状态推送到 webview（用于按钮状态同步） |
+| `_resolveDefinitionBundle()` | 将 `Definition Provider` 返回的多个定义位置解析为可展示的 `PeekContextBundle` |
 | `_getContextFromLocation()` | 打开定义文件，解析符号，构造 ContextInfo |
 | `_findContext()` | 遍历当前文件 DocumentSymbol 树（fallback） |
 | `_deepestContaining()` | 递归树搜索最内层符号 |
@@ -92,6 +93,8 @@ peek/
 | `_getHtml()` | 返回完整的 webview HTML/CSS/JS |
 
 > 说明：Peek View 的符号类型名称映射、顶部 emoji 图标函数与主题样式拼接已复用 `viewCommon.ts`。
+
+> 补充：当 definition provider 返回多个结果时，Peek View 会在左侧展示候选列表；点击或使用 `↑/↓/Home/End` 可切换候选，右侧预览随之更新。候选列表与预览之间的分隔条可拖动，宽度会在 webview state 中持久化。
 
 ### `mapView.ts` — Map View 面板
 

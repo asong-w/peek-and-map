@@ -12,6 +12,11 @@ export interface ContextInfo {
   fileName: string;   // basename shown in the header
 }
 
+export interface PeekContextBundle {
+  contexts: ContextInfo[];
+  selectedIndex: number;
+}
+
 export interface TreeNodeData {
   nodeId: string;
   label: string;
