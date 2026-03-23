@@ -85,8 +85,8 @@ peek/
 | `resolveWebviewView()` | 注册面板、设置消息总线 |
 | `update()` | 核心：definition provider → 多定义候选解析 → 符号树 → webview |
 | `_sendLockState()` | 将 Peek 锁定状态推送到 webview（用于按钮状态同步） |
-| `_resolveDefinitionBundle()` | 将 `Definition Provider` 返回的多个定义位置解析为可展示的 `PeekContextBundle` |
-| `_getContextFromLocation()` | 打开定义文件，解析符号，构造 ContextInfo |
+| `_resolveDefinitionBundle()` | 将 `Definition Provider` 返回的多个定义位置解析为可展示的 `PeekContextBundle`，并尽量锚定到定义起始位置 |
+| `_getContextFromLocation()` | 打开定义文件，解析符号，构造 `ContextInfo`；返回的 `cursorLine` 会优先指向符号定义的起始行 |
 | `_findContext()` | 遍历当前文件 DocumentSymbol 树（fallback） |
 | `_deepestContaining()` | 递归树搜索最内层符号 |
 | `_resetDedup()` | 清除去重缓存，强制下次刷新 |

@@ -270,12 +270,13 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
       const ownerClass =
         this._nearestOwnerClassName(best.ancestors) ??
         this._inferCppOwnerClass(best.symbol.name, defDoc.lineAt(best.symbol.selectionRange.start.line).text, defDoc.languageId);
+      const anchorLine = best.symbol.range.start.line;
       const { code, startLine } = this._expandedText(defDoc, best.symbol.range, padding);
       return {
         code,
         language: LANG_MAP[defDoc.languageId] ?? 'clike',
         startLine,
-        cursorLine: pos.line,
+        cursorLine: anchorLine,
         symbolName: this._formatSymbolWithOwner(best.symbol.name, ownerClass, best.symbol.kind),
         symbolKind: this._kindName(best.symbol.kind),
         filePath: uri.fsPath,
@@ -468,17 +469,22 @@ export class PeekViewProvider implements vscode.WebviewViewProvider {
     for (const loc of defs) {
       const isLink = 'targetUri' in loc;
       const defUri = isLink ? (loc as vscode.LocationLink).targetUri : (loc as vscode.Location).uri;
-      // Prefer targetSelectionRange (tighter), fall back to targetRange / range.
+      // Use the start of the declaration when available so Peek lands at the
+      // beginning of the definition block instead of the symbol's selection.
       const defRange = isLink
         ? ((loc as vscode.LocationLink).targetSelectionRange ?? (loc as vscode.LocationLink).targetRange)
         : (loc as vscode.Location).range;
       if (!defRange) { continue; }
 
+      const focusPos = isLink && (loc as vscode.LocationLink).targetRange
+        ? (loc as vscode.LocationLink).targetRange.start
+        : defRange.start;
+
       const key = `${defUri.toString()}|${defRange.start.line}:${defRange.start.character}`;
       if (seen.has(key)) { continue; }
       seen.add(key);
 
-      const ctx = await this._getContextFromLocation(defUri, defRange.start);
+      const ctx = await this._getContextFromLocation(defUri, focusPos);
       if (ctx) {
         contexts.push(ctx);
       }
