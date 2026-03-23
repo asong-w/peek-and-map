@@ -26,6 +26,9 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
   private _searchSeq = 0;
   private _searchMode: SearchMode;
   private _sortMode: SortMode;
+  private _includeGlob: string;
+  private _excludeGlob: string;
+  private _filtersExpanded: boolean;
   private _peekView?: PeekViewProvider;
 
   constructor(
@@ -38,6 +41,9 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     this._sortMode = this._normalizeSortMode(
       this._context.workspaceState.get<string>(SymbolSearchViewProvider.SORT_MODE_STATE_KEY)
     );
+    this._includeGlob = '';
+    this._excludeGlob = '';
+    this._filtersExpanded = false;
   }
 
   private _normalizeSearchMode(mode: unknown): SearchMode {
@@ -50,9 +56,26 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
       : 'relevance';
   }
 
-  private async _savePreferences(mode: SearchMode, sortMode: SortMode): Promise<void> {
+  private _normalizeGlobPattern(value: unknown): string {
+    return typeof value === 'string' ? value.trim() : '';
+  }
+
+  private _normalizeFiltersExpanded(value: unknown): boolean {
+    return value === true;
+  }
+
+  private async _savePreferences(
+    mode: SearchMode,
+    sortMode: SortMode,
+    includeGlob: string,
+    excludeGlob: string,
+    filtersExpanded: boolean
+  ): Promise<void> {
     this._searchMode = this._normalizeSearchMode(mode);
     this._sortMode = this._normalizeSortMode(sortMode);
+    this._includeGlob = this._normalizeGlobPattern(includeGlob);
+    this._excludeGlob = this._normalizeGlobPattern(excludeGlob);
+    this._filtersExpanded = this._normalizeFiltersExpanded(filtersExpanded);
     await this._context.workspaceState.update(SymbolSearchViewProvider.SEARCH_MODE_STATE_KEY, this._searchMode);
     await this._context.workspaceState.update(SymbolSearchViewProvider.SORT_MODE_STATE_KEY, this._sortMode);
   }
@@ -103,6 +126,9 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
           type: 'initPreferences',
           mode: this._searchMode,
           sortMode: this._sortMode,
+          includeGlob: this._includeGlob,
+          excludeGlob: this._excludeGlob,
+          filtersExpanded: this._filtersExpanded,
         });
         webviewView.webview.postMessage({
           type: 'results',
@@ -119,14 +145,19 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
         const requestId = typeof msg.requestId === 'number' ? msg.requestId : 0;
         const fuzzy = Boolean(msg.fuzzy);
         const sortMode = this._normalizeSortMode(msg.sortMode);
-        await this._search(query, requestId, fuzzy, sortMode);
+        const includeGlob = this._normalizeGlobPattern(msg.includeGlob);
+        const excludeGlob = this._normalizeGlobPattern(msg.excludeGlob);
+        await this._search(query, requestId, fuzzy, sortMode, includeGlob, excludeGlob);
         return;
       }
 
       if (msg.type === 'setPreferences') {
         const mode: SearchMode = Boolean(msg.fuzzy) ? 'fuzzy' : 'exact';
         const sortMode = this._normalizeSortMode(msg.sortMode);
-        await this._savePreferences(mode, sortMode);
+        const includeGlob = this._normalizeGlobPattern(msg.includeGlob);
+        const excludeGlob = this._normalizeGlobPattern(msg.excludeGlob);
+        const filtersExpanded = Boolean(msg.filtersExpanded);
+        await this._savePreferences(mode, sortMode, includeGlob, excludeGlob, filtersExpanded);
         return;
       }
 
@@ -151,7 +182,14 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private async _search(query: string, requestId: number, fuzzy: boolean, sortMode: SortMode): Promise<void> {
+  private async _search(
+    query: string,
+    requestId: number,
+    fuzzy: boolean,
+    sortMode: SortMode,
+    includeGlob: string,
+    excludeGlob: string
+  ): Promise<void> {
     if (!this._view) { return; }
 
     const trimmed = query.trim();
@@ -191,6 +229,9 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const maxResults = 300;
     const filteredItems = rawItems.filter((item) => {
+      if (!this._passesFileFilter(item.location.uri, includeGlob, excludeGlob)) {
+        return false;
+      }
       const name = item.name ?? '';
       const containerName = item.containerName ?? '';
       const kind = this._kindToString(item.kind);
@@ -299,6 +340,92 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     return false;
   }
 
+  private _passesFileFilter(uri: vscode.Uri, includeGlob: string, excludeGlob: string): boolean {
+    const normalizedPath = vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/');
+    const fileName = path.basename(uri.fsPath);
+
+    const includeTokens = this._splitGlobList(includeGlob);
+    const excludeTokens = this._splitGlobList(excludeGlob);
+
+    if (includeTokens.length > 0 && !includeTokens.some((token) => this._globTokenMatches(token, normalizedPath, fileName))) {
+      return false;
+    }
+    if (excludeTokens.some((token) => this._globTokenMatches(token, normalizedPath, fileName))) {
+      return false;
+    }
+    return true;
+  }
+
+  private _splitGlobList(raw: string): string[] {
+    if (!raw.trim()) { return []; }
+    return raw
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  private _globTokenMatches(token: string, normalizedPath: string, fileName: string): boolean {
+    const regex = this._globToRegExp(token);
+    if (token.includes('/')) {
+      return regex.test(normalizedPath);
+    }
+    return regex.test(normalizedPath) || regex.test(fileName);
+  }
+
+  private _globToRegExp(glob: string): RegExp {
+    let i = 0;
+    const source = glob.replace(/\\/g, '/').trim();
+    let out = '^';
+
+    while (i < source.length) {
+      const ch = source[i];
+
+      if (ch === '*') {
+        if (source[i + 1] === '*') {
+          out += '.*';
+          i += 2;
+          continue;
+        }
+        out += '[^/]*';
+        i += 1;
+        continue;
+      }
+
+      if (ch === '?') {
+        out += '[^/]';
+        i += 1;
+        continue;
+      }
+
+      if (ch === '{') {
+        const end = source.indexOf('}', i + 1);
+        if (end > i + 1) {
+          const body = source.slice(i + 1, end);
+          const parts = body
+            .split(',')
+            .map((part) => part.trim())
+            .filter(Boolean)
+            .map((part) => part.replace(/[.+^${}()|[\]\\]/g, '\\$&'));
+          if (parts.length > 0) {
+            out += '(?:' + parts.join('|') + ')';
+            i = end + 1;
+            continue;
+          }
+        }
+      }
+
+      out += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+      i += 1;
+    }
+
+    out += '$';
+    try {
+      return new RegExp(out);
+    } catch {
+      return /^$/;
+    }
+  }
+
   private async _openLocation(uri: vscode.Uri, line: number, character: number): Promise<void> {
     const safeLine = Math.max(0, line);
     const safeCharacter = Math.max(0, character);
@@ -397,6 +524,24 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
       flex-shrink: 0;
     }
 
+    #file-filters-toggle {
+      cursor: pointer;
+      padding: 2px 8px;
+      font-size: 12px;
+      border: 1px solid var(--vscode-panel-border, #333);
+      border-radius: 3px;
+      background: var(--vscode-sideBarSectionHeader-background, #252526);
+      color: var(--vscode-foreground, #d4d4d4);
+      flex-shrink: 0;
+      line-height: 1.4;
+      white-space: nowrap;
+    }
+
+    #file-filters-toggle.active {
+      background: var(--vscode-list-activeSelectionBackground, rgba(0, 122, 204, 0.35));
+      color: var(--vscode-list-activeSelectionForeground, #fff);
+    }
+
     #sort-wrap label {
       font-size: 11px;
       color: var(--vscode-descriptionForeground, #858585);
@@ -409,6 +554,40 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
       background: var(--vscode-dropdown-background, var(--vscode-sideBarSectionHeader-background, #252526));
       color: var(--vscode-dropdown-foreground, var(--vscode-foreground, #d4d4d4));
       border-radius: 4px;
+      padding: 0 6px;
+    }
+
+    #file-filters {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 4px 8px;
+      padding: 6px 10px;
+      border: 1px solid var(--pm-border);
+      border-radius: 6px;
+      background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background, #252526));
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    #file-filters[hidden] {
+      display: none;
+    }
+
+    #file-filters label {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground, #858585);
+      white-space: nowrap;
+    }
+
+    #file-filters input {
+      height: 22px;
+      width: 100%;
+      min-width: 0;
+      font-size: 12px;
+      border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, #333));
+      border-radius: 3px;
+      background: var(--vscode-input-background, var(--vscode-editor-background, #1e1e1e));
+      color: var(--vscode-input-foreground, var(--vscode-foreground, #d4d4d4));
       padding: 0 6px;
     }
 
@@ -521,6 +700,7 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
       <button id="mode-tab-exact" class="mode-tab active" role="tab" aria-selected="true" title="Exact search mode">Exact</button>
       <button id="mode-tab-fuzzy" class="mode-tab" role="tab" aria-selected="false" title="Fuzzy search mode">Fuzzy</button>
     </div>
+    <button id="file-filters-toggle" aria-expanded="false" title="Toggle file include/exclude filters">Files ▸</button>
     <div id="sort-wrap">
       <label for="sort-mode">Sort</label>
       <select id="sort-mode" title="Sort search results">
@@ -531,6 +711,12 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
         <option value="path">Path</option>
       </select>
     </div>
+  </div>
+  <div id="file-filters" hidden>
+    <label for="include-glob">files to include</label>
+    <input id="include-glob" type="text" placeholder="e.g. src/**" />
+    <label for="exclude-glob">files to exclude</label>
+    <input id="exclude-glob" type="text" placeholder="e.g. **/*.test.ts" />
   </div>
   <div class="search-row">
     <div class="input-wrap">
@@ -544,6 +730,10 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     const vscodeApi = acquireVsCodeApi();
     const modeTabExact = document.getElementById('mode-tab-exact');
     const modeTabFuzzy = document.getElementById('mode-tab-fuzzy');
+    const fileFiltersToggle = document.getElementById('file-filters-toggle');
+    const fileFilters = document.getElementById('file-filters');
+    const includeGlobInput = document.getElementById('include-glob');
+    const excludeGlobInput = document.getElementById('exclude-glob');
     const sortModeSelect = document.getElementById('sort-mode');
     const queryInput = document.getElementById('queryInput');
     const statusEl = document.getElementById('status');
@@ -553,6 +743,9 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     let debounceTimer = undefined;
     let fuzzyMode = false;
     let sortMode = 'relevance';
+    let includeGlob = '';
+    let excludeGlob = '';
+    let filtersExpanded = false;
     let singleClickAction = 'peekOnly';
 
     function normalizeSingleClickAction(action) {
@@ -566,6 +759,39 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
         line,
         character,
       });
+    }
+
+    function normalizeGlobInput(value) {
+      return typeof value === 'string' ? value.trim() : '';
+    }
+
+    function applyFileFilterUi(expanded) {
+      const isExpanded = !!expanded;
+      filtersExpanded = isExpanded;
+      if (fileFilters) {
+        fileFilters.hidden = !isExpanded;
+      }
+      if (fileFiltersToggle) {
+        fileFiltersToggle.classList.toggle('active', isExpanded);
+        fileFiltersToggle.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+        fileFiltersToggle.textContent = isExpanded ? 'Files ▾' : 'Files ▸';
+      }
+    }
+
+    function persistPreferences() {
+      vscodeApi.postMessage({
+        type: 'setPreferences',
+        fuzzy: fuzzyMode,
+        sortMode,
+        includeGlob,
+        excludeGlob,
+        filtersExpanded,
+      });
+    }
+
+    function syncAndSendQuery() {
+      persistPreferences();
+      sendQuery();
     }
 
     function updateModeTabs() {
@@ -586,8 +812,7 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
       }
       fuzzyMode = normalized;
       updateModeTabs();
-      persistPreferences();
-      sendQuery();
+      syncAndSendQuery();
     }
 
     function setSortMode(nextSortMode) {
@@ -599,16 +824,7 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
       if (sortModeSelect) {
         sortModeSelect.value = sortMode;
       }
-      persistPreferences();
-      sendQuery();
-    }
-
-    function persistPreferences() {
-      vscodeApi.postMessage({
-        type: 'setPreferences',
-        fuzzy: fuzzyMode,
-        sortMode,
-      });
+      syncAndSendQuery();
     }
 
     function escapeHtml(text) {
@@ -661,6 +877,8 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
         query: queryInput.value,
         fuzzy: fuzzyMode,
         sortMode,
+        includeGlob,
+        excludeGlob,
       });
     }
 
@@ -669,6 +887,12 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
         clearTimeout(debounceTimer);
       }
       debounceTimer = setTimeout(sendQuery, 120);
+    }
+
+    function onFilterInput() {
+      includeGlob = normalizeGlobInput(includeGlobInput ? includeGlobInput.value : includeGlob);
+      excludeGlob = normalizeGlobInput(excludeGlobInput ? excludeGlobInput.value : excludeGlob);
+      syncAndSendQuery();
     }
 
     function renderItems(items) {
@@ -741,6 +965,26 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     });
 
     queryInput.addEventListener('input', onInput);
+    if (fileFiltersToggle) {
+      fileFiltersToggle.addEventListener('click', () => {
+        applyFileFilterUi(!filtersExpanded);
+        persistPreferences();
+      });
+    }
+    if (includeGlobInput) {
+      includeGlobInput.addEventListener('input', onFilterInput);
+      includeGlobInput.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') { return; }
+        sendQuery();
+      });
+    }
+    if (excludeGlobInput) {
+      excludeGlobInput.addEventListener('input', onFilterInput);
+      excludeGlobInput.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') { return; }
+        sendQuery();
+      });
+    }
     if (modeTabExact) {
       modeTabExact.addEventListener('click', () => setSearchMode(false));
     }
@@ -801,9 +1045,19 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
       if (msg.type === 'initPreferences') {
         fuzzyMode = String(msg.mode || 'exact') === 'fuzzy';
         sortMode = String(msg.sortMode || 'relevance');
+        includeGlob = normalizeGlobInput(msg.includeGlob);
+        excludeGlob = normalizeGlobInput(msg.excludeGlob);
+        filtersExpanded = Boolean(msg.filtersExpanded);
         updateModeTabs();
+        applyFileFilterUi(filtersExpanded);
         if (sortModeSelect) {
           sortModeSelect.value = sortMode;
+        }
+        if (includeGlobInput) {
+          includeGlobInput.value = includeGlob;
+        }
+        if (excludeGlobInput) {
+          excludeGlobInput.value = excludeGlob;
         }
         return;
       }
