@@ -110,7 +110,7 @@ TypeScript · JavaScript · TSX · JSX · Python · Java · C · C++ · C# · Go
 ---
 
 ## TODO
-
+- 分析vscode主题实现原理，尝试实现完美跟随。
 
 ---
 
